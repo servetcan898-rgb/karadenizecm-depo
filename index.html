@@ -1,0 +1,1326 @@
+<!DOCTYPE html>
+<html lang="tr" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KARADENİZ EÇM | Kurumsal Envanter, SLA ve Zimmet Yönetim Sistemi</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    :root {
+      --bg-body: #090d16;
+      --bg-header: rgba(9, 13, 22, 0.92);
+      --bg-card: #111827;
+      --bg-subcard: #0c1220;
+      --bg-input: #080c15;
+      --bg-thead: rgba(255, 255, 255, 0.025);
+      --bg-row-hover: rgba(255, 255, 255, 0.025);
+      --border-main: #1e293b;
+      --border-subtle: rgba(255, 255, 255, 0.05);
+      --text-primary: #f8fafc;
+      --text-secondary: #cbd5e1;
+      --text-muted: #64748b;
+      --card-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+      --tab-active-bg: #eab308;
+      --tab-active-text: #090d16;
+      --tab-active-border: #eab308;
+      --accent-blue: #38bdf8;
+      --accent-amber: #f59e0b;
+      --accent-emerald: #10b981;
+      --accent-red: #ef4444;
+    }
+
+    html.light {
+      --bg-body: #f4f6f9;
+      --bg-header: rgba(255, 255, 255, 0.96);
+      --bg-card: #ffffff;
+      --bg-subcard: #f8fafc;
+      --bg-input: #ffffff;
+      --bg-thead: #f1f5f9;
+      --bg-row-hover: #f8fafc;
+      --border-main: #e2e8f0;
+      --border-subtle: #f1f5f9;
+      --text-primary: #0f172a;
+      --text-secondary: #334155;
+      --text-muted: #64748b;
+      --card-shadow: 0 2px 10px -2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
+      --tab-active-bg: #0f172a;
+      --tab-active-text: #ffffff;
+      --tab-active-border: #0f172a;
+      --accent-blue: #0284c7;
+      --accent-amber: #d97706;
+      --accent-emerald: #059669;
+      --accent-red: #dc2626;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--bg-body);
+      color: var(--text-primary);
+      transition: background-color 0.18s ease, color 0.18s ease;
+      -webkit-font-smoothing: antialiased;
+    }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+
+    /* Sleek thin scrollbars */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(100, 116, 139, 0.25); border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(100, 116, 139, 0.45); }
+    * { scrollbar-width: thin; scrollbar-color: rgba(100, 116, 139, 0.25) transparent; }
+
+    .app-header {
+      background-color: var(--bg-header);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-main);
+    }
+    .card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-main);
+      border-radius: 0.75rem;
+      box-shadow: var(--card-shadow);
+    }
+    .subcard {
+      background-color: var(--bg-subcard);
+      border: 1px solid var(--border-main);
+      border-radius: 0.625rem;
+    }
+    .theme-input {
+      background-color: var(--bg-input);
+      border: 1px solid var(--border-main);
+      color: var(--text-primary);
+      border-radius: 0.5rem;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .theme-input:focus {
+      outline: none;
+      border-color: #eab308;
+      box-shadow: 0 0 0 3px rgba(234, 179, 8, 0.15);
+    }
+    .text-main { color: var(--text-primary); }
+    .text-sub { color: var(--text-secondary); }
+    .text-mute { color: var(--text-muted); }
+
+    /* Table styling */
+    .corp-table thead tr {
+      background-color: var(--bg-thead);
+      border-bottom: 1px solid var(--border-main);
+    }
+    .corp-table thead th {
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 0.65rem 0.75rem;
+    }
+    .corp-table tbody tr {
+      border-bottom: 1px solid var(--border-subtle);
+      transition: background-color 0.12s ease;
+    }
+    .corp-table tbody tr:hover {
+      background-color: var(--bg-row-hover);
+    }
+    .corp-table tbody td {
+      padding: 0.65rem 0.75rem;
+    }
+
+    /* Navigation Tabs */
+    .tab-btn {
+      color: var(--text-secondary);
+      font-weight: 600;
+      border: 1px solid transparent;
+      transition: all 0.15s ease;
+    }
+    .tab-btn:hover {
+      color: var(--text-primary);
+      background-color: var(--bg-subcard);
+      border-color: var(--border-main);
+    }
+    .tab-btn.active {
+      background-color: var(--tab-active-bg);
+      color: var(--tab-active-text);
+      border-color: var(--tab-active-border);
+      font-weight: 700;
+    }
+
+    /* Badges with Day/Night contrast */
+    .badge-sol { background: rgba(2, 132, 199, 0.12); color: var(--accent-blue); border: 1px solid rgba(2, 132, 199, 0.28); font-weight: 700; }
+    .badge-turkcell { background: rgba(234, 179, 8, 0.15); color: var(--accent-amber); border: 1px solid rgba(234, 179, 8, 0.35); font-weight: 700; }
+
+    /* Animated Brand Emblem */
+    @keyframes ringRotate {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .brand-ring {
+      transform-origin: center;
+      animation: ringRotate 18s linear infinite;
+    }
+
+    .export-icon-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 0.45rem;
+      border: 1px solid var(--border-main);
+      background-color: var(--bg-subcard);
+      color: var(--text-secondary);
+      transition: all 0.15s ease;
+    }
+    .export-icon-btn:hover {
+      border-color: var(--accent-emerald);
+      color: var(--accent-emerald);
+      background-color: rgba(16, 185, 129, 0.08);
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col text-[13px]">
+
+  <!-- ==================== TOAST CONTAINER ==================== -->
+  <div id="toast-container" class="fixed top-4 right-4 z-[60] flex flex-col gap-2 max-w-sm w-full pointer-events-none"></div>
+
+  <!-- ==================== PHYSICAL SHELF DETAIL MODAL ==================== -->
+  <div id="shelf-detail-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+    <div class="card max-w-4xl w-full p-5 space-y-4 max-h-[88vh] flex flex-col">
+      <div class="flex flex-wrap items-center justify-between gap-3 border-b pb-3" style="border-color: var(--border-main);">
+        <div>
+          <div class="flex items-center gap-2">
+            <h3 id="modal-shelf-title" class="text-base font-extrabold text-main font-mono">SOL01</h3>
+            <span id="modal-shelf-badge" class="px-2 py-0.5 rounded text-xs font-semibold"></span>
+          </div>
+          <p id="modal-shelf-subtitle" class="text-xs text-mute mt-0.5"></p>
+        </div>
+        <div class="flex items-center gap-2">
+          <input id="modal-shelf-search" oninput="renderShelfDetailModalTable()" type="text" placeholder="Seri no veya model filtrele..." class="theme-input px-3 py-1.5 text-xs w-52" />
+          <button onclick="exportCurrentModalShelfToExcel()" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 transition">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>
+            <span>Excel Dışa Aktar</span>
+          </button>
+          <button onclick="closeShelfDetailModal()" class="w-8 h-8 rounded-lg subcard text-sub hover:text-red-500 flex items-center justify-center text-base font-bold">&times;</button>
+        </div>
+      </div>
+
+      <div class="overflow-y-auto flex-1">
+        <table class="w-full text-left border-collapse text-xs corp-table">
+          <thead>
+            <tr>
+              <th>Seri No</th>
+              <th>Başlık</th>
+              <th>Cihaz Modeli</th>
+              <th>Turkcell Rafı</th>
+              <th>Rafa Giriş Tarihi</th>
+              <th>Stok Süresi</th>
+              <th>Kalan SLA</th>
+              <th>Açıklama</th>
+            </tr>
+          </thead>
+          <tbody id="modal-shelf-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== LOGIN SCREEN OVERLAY ==================== -->
+  <div id="login-screen" class="fixed inset-0 z-50 flex items-center justify-center p-4" style="background-color: var(--bg-body);">
+    <div class="card max-w-4xl w-full grid grid-cols-1 md:grid-cols-12 overflow-hidden">
+      <div class="md:col-span-7 p-8 flex flex-col justify-between border-b md:border-b-0 md:border-r" style="border-color: var(--border-main); background: linear-gradient(135deg, rgba(2, 132, 199, 0.05) 0%, rgba(234, 179, 8, 0.03) 100%);">
+        <div class="space-y-6">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3.5">
+              <div class="w-11 h-11 rounded-xl bg-slate-900 flex items-center justify-center shadow-md border border-slate-700">
+                <svg class="w-8 h-8" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <circle class="brand-ring" cx="24" cy="24" r="19" stroke="url(#gradRing)" stroke-width="2" stroke-dasharray="18 8" stroke-linecap="round"/>
+                  <path d="M15 14V34M15 24L25 14M19 20L27 34" stroke="#FACC15" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M31 18C34.5 20.5 34.5 27.5 31 30" stroke="#38BDF8" stroke-width="2.8" stroke-linecap="round"/>
+                  <circle cx="33" cy="24" r="2" fill="#FACC15"/>
+                  <defs>
+                    <linearGradient id="gradRing" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+                      <stop stop-color="#FACC15"/>
+                      <stop offset="0.5" stop-color="#38BDF8"/>
+                      <stop offset="1" stop-color="#FACC15"/>
+                    </linearGradient>
+                  </defs>
+                </svg>
+              </div>
+              <div>
+                <div class="flex items-center gap-1.5">
+                  <span class="text-base font-extrabold tracking-tight text-main">KARADENİZ</span>
+                  <span class="text-sm font-extrabold tracking-tight px-1.5 py-0.5 rounded bg-yellow-400 text-slate-950 leading-none">EÇM</span>
+                </div>
+                <div class="text-[11px] font-medium text-mute mt-1">Kurumsal Envanter ve Saha Operasyon Yönetimi</div>
+              </div>
+            </div>
+
+            <button onclick="toggleTheme()" class="px-2.5 py-1.5 rounded-lg subcard hover:opacity-80 transition text-xs flex items-center gap-1.5" title="Görünüm Modu">
+              <span class="theme-icon">☀️</span>
+            </button>
+          </div>
+
+          <div class="space-y-2 pt-2">
+            <h2 class="text-lg font-bold text-main leading-snug">
+              Depo, Fiziksel Raf, SLA ve Zimmet Yönetim Platformu
+            </h2>
+            <p class="text-xs text-sub leading-relaxed">
+              BYS sicil numaranız veya kurumsal kullanıcı adınız ile giriş yapınız. Yetki profilinize tanımlı operasyon ekranları otomatik olarak yüklenecektir.
+            </p>
+          </div>
+        </div>
+
+        <div class="pt-6 space-y-2">
+          <div class="text-[11px] font-semibold text-mute uppercase tracking-wider">Birim Giriş Profilleri</div>
+          <div class="grid grid-cols-2 gap-2">
+            <button onclick="quickLogin('yonetici', '123456')" class="p-2.5 rounded-lg subcard hover:border-yellow-500/50 text-left transition">
+              <div class="font-bold text-main text-xs">Operasyon Yönetimi</div>
+              <div class="text-[11px] text-mute mt-0.5">Kemal Özkan</div>
+            </button>
+            <button onclick="quickLogin('depocu', '123456')" class="p-2.5 rounded-lg subcard hover:border-sky-500/50 text-left transition">
+              <div class="font-bold text-main text-xs">Merkez Depo Yönetimi</div>
+              <div class="text-[11px] text-mute mt-0.5">Hasan Çelik</div>
+            </button>
+            <button onclick="quickLogin('karsilama', '123456')" class="p-2.5 rounded-lg subcard hover:border-emerald-500/50 text-left transition">
+              <div class="font-bold text-main text-xs">Müşteri Karşılama Birimi</div>
+              <div class="text-[11px] text-mute mt-0.5">Zeynep Aydın</div>
+            </button>
+            <button onclick="quickLogin('ahmet', '123456')" class="p-2.5 rounded-lg subcard hover:border-amber-500/50 text-left transition">
+              <div class="font-bold text-main text-xs">Saha Teknik Ekibi</div>
+              <div class="text-[11px] text-mute mt-0.5">Ahmet Yılmaz</div>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="md:col-span-5 p-8 flex flex-col justify-center space-y-5">
+        <div>
+          <h3 class="text-base font-bold text-main">Kurumsal Oturum Aç</h3>
+          <p class="text-xs text-mute mt-1">BYS sicil numaranız veya kullanıcı adınızı giriniz.</p>
+        </div>
+
+        <div class="space-y-3.5">
+          <div>
+            <label class="text-xs font-semibold text-sub block mb-1.5">Kullanıcı Adı / BYS Sicil No</label>
+            <input id="login-username" type="text" value="yonetici" class="theme-input w-full px-3.5 py-2.5 text-xs" />
+          </div>
+          <div>
+            <label class="text-xs font-semibold text-sub block mb-1.5">Şifre</label>
+            <input id="login-password" type="password" value="123456" onkeydown="if(event.key==='Enter') submitLogin()" class="theme-input w-full px-3.5 py-2.5 text-xs" />
+          </div>
+          <div id="login-error" class="hidden text-xs text-red-500 font-semibold"></div>
+          <button onclick="submitLogin()" class="w-full py-2.5 rounded-lg bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-bold text-xs transition shadow">
+            Sisteme Giriş Yap
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== TOP HEADER (FIXED LIVE CLOCK & DATE ON EVERY PAGE) ==================== -->
+  <header class="app-header sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
+      <!-- Brand Logo -->
+      <div class="flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-lg bg-slate-900 flex items-center justify-center border border-slate-700 shadow-sm">
+          <svg class="w-6 h-6" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle class="brand-ring" cx="24" cy="24" r="19" stroke="url(#gradHeader)" stroke-width="2.2" stroke-dasharray="18 8" stroke-linecap="round"/>
+            <path d="M15 14V34M15 24L25 14M19 20L27 34" stroke="#FACC15" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M31 18C34.5 20.5 34.5 27.5 31 30" stroke="#38BDF8" stroke-width="2.8" stroke-linecap="round"/>
+            <circle cx="33" cy="24" r="2" fill="#FACC15"/>
+            <defs>
+              <linearGradient id="gradHeader" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#FACC15"/>
+                <stop offset="0.5" stop-color="#38BDF8"/>
+                <stop offset="1" stop-color="#FACC15"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <div>
+          <div class="flex items-center gap-1.5">
+            <span class="text-sm font-extrabold tracking-tight text-main">KARADENİZ</span>
+            <span class="text-[11px] font-extrabold px-1.5 py-0.5 rounded bg-yellow-400 text-slate-950 leading-none">EÇM</span>
+          </div>
+          <div class="text-[10px] font-medium text-mute">Envanter, Fiziksel Raf ve SLA Yönetim Sistemi</div>
+        </div>
+      </div>
+
+      <!-- Right Controls: Live Clock & Date + Theme + User + Excel + Logout -->
+      <div class="flex flex-wrap items-center gap-2">
+        <div class="px-3 py-1 rounded-lg subcard flex items-center gap-2">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+          <div class="text-right">
+            <div id="live-clock-time" class="font-mono font-bold text-xs text-main leading-none">--:--:--</div>
+            <div id="live-clock-date" class="text-[10px] font-medium text-mute mt-0.5">---</div>
+          </div>
+        </div>
+
+        <button onclick="toggleTheme()" class="px-2.5 py-1.5 rounded-lg subcard hover:opacity-80 text-xs font-semibold flex items-center gap-1.5 transition" title="Görünüm Modu">
+          <span class="theme-icon">☀️</span>
+          <span id="theme-label" class="hidden lg:inline text-sub text-[11px]">Gündüz Modu</span>
+        </button>
+
+        <div id="user-badge" class="px-3 py-1.5 rounded-lg subcard text-xs flex items-center gap-2"></div>
+
+        <button id="btn-export-all" onclick="exportAllToExcel()" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 transition" title="Tüm Envanter Raporunu İndir">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>
+          <span class="hidden sm:inline">Genel Rapor</span>
+        </button>
+
+        <button onclick="logoutUser()" class="px-2.5 py-1.5 rounded-lg subcard hover:opacity-80 text-sub text-xs font-semibold transition">
+          Çıkış
+        </button>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div id="main-nav-wrap" class="max-w-7xl mx-auto px-4 pb-2 overflow-x-auto">
+      <nav class="flex items-center gap-1 min-w-max">
+        <button onclick="switchTab('dashboard')" id="tab-dashboard" class="tab-btn active px-3 py-1.5 rounded-md text-xs">
+          1. Genel Durum & SLA
+        </button>
+        <button onclick="switchTab('turkcell-sync')" id="tab-turkcell-sync" class="tab-btn px-3 py-1.5 rounded-md text-xs">
+          2. Rapor Eşleştirme
+        </button>
+        <button onclick="switchTab('shipments')" id="tab-shipments" class="tab-btn px-3 py-1.5 rounded-md text-xs">
+          3. Yeni Sevkiyat Havuzu
+        </button>
+        <button onclick="switchTab('dispatch')" id="tab-dispatch" class="tab-btn px-3 py-1.5 rounded-md text-xs">
+          4. Ekip Dağıtım & Geçmiş
+        </button>
+        <button onclick="switchTab('returns')" id="tab-returns" class="tab-btn px-3 py-1.5 rounded-md text-xs">
+          5. İade & Transfer Havuzu
+        </button>
+        <button onclick="switchTab('counts')" id="tab-counts" class="tab-btn px-3 py-1.5 rounded-md text-xs">
+          6. Depo & Araç Sayımları
+        </button>
+        <button onclick="switchTab('personnel')" id="tab-personnel" class="tab-btn px-3 py-1.5 rounded-md text-xs">
+          7. Personel & Raf Yönetimi
+        </button>
+        <button onclick="switchTab('notifications')" id="tab-notifications" class="tab-btn px-3 py-1.5 rounded-md text-xs">
+          8. Bildirim Kayıtları (<span id="notif-badge">0</span>)
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ==================== CAMERA QR MODAL ==================== -->
+  <div id="qr-modal" class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+    <div class="card max-w-md w-full p-5 space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="font-bold text-main text-sm">Kamera QR / Barkod Okuyucu</h3>
+          <p class="text-[11px] text-mute">Okutulan her seri numarası otomatik olarak listeye eklenir.</p>
+        </div>
+        <button onclick="closeQrScanner()" class="w-7 h-7 rounded-lg subcard text-sub flex items-center justify-center font-bold">&times;</button>
+      </div>
+      <div id="qr-reader" class="w-full rounded-lg overflow-hidden bg-black min-h-[240px]"></div>
+      <div class="subcard p-3 space-y-1">
+        <div class="flex items-center justify-between text-xs">
+          <span class="text-mute">Okutulan Seri Sayısı:</span>
+          <span id="qr-scanned-counter" class="font-mono font-bold text-amber-500">0 Adet</span>
+        </div>
+        <div id="qr-last-scanned" class="text-[11px] font-mono text-emerald-500 truncate">Kameraya QR kod hizalayın...</div>
+      </div>
+      <button onclick="closeQrScanner()" class="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs">
+        Okutmayı Tamamla
+      </button>
+    </div>
+  </div>
+
+  <!-- ==================== MAIN CONTENT ==================== -->
+  <main class="max-w-7xl w-full mx-auto px-4 py-5 flex-1 space-y-5">
+
+    <!-- ========================================================================= -->
+    <!-- ROLE VIEW A: SAHA TEKNİSYENİ EKRANI -->
+    <!-- ========================================================================= -->
+    <section id="view-role-tech" class="hidden space-y-5">
+      <div class="card p-4 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 class="text-sm font-bold text-main" id="tech-welcome-title">Saha Teknisyeni Zimmet Paneli</h2>
+          <p class="text-xs text-mute mt-0.5">Zimmetli cihazlarınızın SLA sürelerini takip edebilir, transfer, iade ve haftalık araç sayım işlemlerini gerçekleştirebilirsiniz.</p>
+        </div>
+      </div>
+
+      <div class="card p-5 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h3 class="text-xs font-bold uppercase tracking-wider text-mute">Üzerimdeki Zimmetli Cihazlar ve SLA Durumu</h3>
+        </div>
+        <div id="tech-my-devices-list" class="grid grid-cols-1 md:grid-cols-2 gap-2.5"></div>
+      </div>
+
+      <!-- Tech Device Transfer Panel -->
+      <div class="card p-5 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 class="text-sm font-bold text-main">Zimmetli Cihaz Transferi (Saha Ekibi veya Merkez Depo)</h3>
+            <p class="text-xs text-mute">
+              Başka bir teknisyene devredilen veya kullanılmadan merkez depoya teslim edilen sağlam cihazları onaya gönderin.
+            </p>
+          </div>
+          <button onclick="openContinuousQrScanner(sn => addTechTransferStaged(sn))" class="px-3 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs">
+            Kamera ile QR Okut
+          </button>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 subcard p-3.5">
+          <div>
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Transfer Türü</label>
+            <select id="tech-transfer-type" onchange="toggleTechTransferTargetSelect()" class="theme-input w-full px-3 py-2 text-xs font-semibold">
+              <option value="TEKNİSYENDEN_TEKNİSYENE">Teknisyene Saha Transferi</option>
+              <option value="TEKNİSYENDEN_DEPOYA">Kullanılmayan Cihaz — Merkez Depo İadesi</option>
+            </select>
+          </div>
+          <div id="tech-transfer-target-wrap">
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Teslim Alan Teknisyen</label>
+            <select id="tech-transfer-target-person" class="theme-input w-full px-3 py-2 text-xs font-semibold"></select>
+          </div>
+          <div>
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Açıklama</label>
+            <input id="tech-transfer-note" type="text" placeholder="Transfer açıklaması..." class="theme-input w-full px-3 py-2 text-xs" />
+          </div>
+        </div>
+
+        <input id="tech-transfer-serial-input" oninput="handleAutoScannerInput(this, sn => addTechTransferStaged(sn))" onkeydown="if(event.key==='Enter'){ addTechTransferStaged(this.value); this.value=''; }" type="text" placeholder="Transfer edilecek cihaz seri numarasını okutun veya zimmet listesinden seçin..." class="theme-input w-full px-3.5 py-2 text-xs font-mono" />
+
+        <div class="subcard p-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-sub">Seçilen Cihazlar (<strong id="tech-staged-transfer-count" class="text-main">0</strong> Adet)</span>
+            <button onclick="commitTechStagedTransfers()" class="px-4 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs">
+              Transfer Onayına Gönder
+            </button>
+          </div>
+          <div id="tech-staged-transfer-list" class="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto"></div>
+        </div>
+
+        <div class="pt-2 border-t space-y-2" style="border-color: var(--border-main);">
+          <div class="text-xs font-semibold text-mute">Transfer Taleplerim</div>
+          <div id="tech-my-transfers-list" class="space-y-1.5 max-h-44 overflow-y-auto"></div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div class="card p-5 space-y-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-bold text-main">Müşteri Söküm / İade Cihaz Kaydı</h3>
+              <p class="text-xs text-mute">Müşteri adresinden alınan iade cihazları okutup havuza gönderin.</p>
+            </div>
+            <button onclick="openContinuousQrScanner(sn => addTechReturnStaged(sn))" class="px-3 py-2 rounded-lg bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-bold text-xs">
+              Kamera ile QR Okut
+            </button>
+          </div>
+
+          <div class="flex gap-2">
+            <input id="tech-only-ret-sn" oninput="handleAutoScannerInput(this, sn => addTechReturnStaged(sn))" onkeydown="if(event.key==='Enter'){ addTechReturnStaged(this.value); this.value=''; }" type="text" placeholder="Seri numarası okutun..." class="theme-input flex-1 px-3.5 py-2 text-xs font-mono" />
+            <input id="tech-only-ret-note" type="text" placeholder="Açıklama" class="theme-input w-44 px-3 py-2 text-xs" />
+          </div>
+
+          <div class="subcard p-3 space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-xs text-sub">Okutulan İade Listesi (<strong id="tech-staged-ret-count" class="text-main">0</strong> Cihaz)</span>
+              <button onclick="commitTechStagedReturns()" class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs">
+                İade Havuzuna Gönder
+              </button>
+            </div>
+            <div id="tech-staged-ret-list" class="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto"></div>
+          </div>
+
+          <div class="pt-2 border-t space-y-2" style="border-color: var(--border-main);">
+            <div class="text-xs font-semibold text-mute">Havuza Gönderdiğim İade Kayıtları</div>
+            <div id="tech-my-returns-list" class="space-y-1.5 max-h-40 overflow-y-auto"></div>
+          </div>
+        </div>
+
+        <div class="card p-5 space-y-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-bold text-main">Haftalık Araç İçi Cihaz Sayımı</h3>
+              <p class="text-xs text-mute">Araçtaki tüm cihazları okutarak haftalık sayımı kaydedin.</p>
+            </div>
+            <button onclick="openContinuousQrScanner(sn => addTechOnlyCountStaged(sn))" class="px-3 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs">
+              Kamera ile QR Okut
+            </button>
+          </div>
+
+          <input id="tech-only-count-input" oninput="handleAutoScannerInput(this, sn => addTechOnlyCountStaged(sn))" onkeydown="if(event.key==='Enter'){ addTechOnlyCountStaged(this.value); this.value=''; }" type="text" placeholder="Araçtaki cihaz serilerini okutun..." class="theme-input w-full px-3.5 py-2 text-xs font-mono" />
+
+          <div class="subcard p-3 space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-xs text-sub">Okutulan Cihazlar (<strong id="tech-staged-count-num" class="text-main">0</strong> Cihaz)</span>
+              <button onclick="submitTechOnlyVehicleCount()" class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs">
+                Sayımı Kaydet
+              </button>
+            </div>
+            <div id="tech-staged-count-list" class="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto"></div>
+          </div>
+
+          <div id="tech-only-count-feedback" class="hidden p-3 rounded-lg text-xs"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================================= -->
+    <!-- ROLE VIEW B: KARŞILAMA BİRİMİ EKRANI -->
+    <!-- ========================================================================= -->
+    <section id="view-role-karsilama" class="hidden space-y-5">
+      <div class="card p-4">
+        <h2 class="text-sm font-bold text-main">Müşteri Karşılama İade Kayıt Paneli</h2>
+        <p class="text-xs text-mute mt-0.5">Müşteriden teslim alınan veya kargo ile gelen iade cihazları okutarak depo onay havuzuna aktarın.</p>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div class="card p-5 space-y-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-bold text-main">Seri Numarası Okutma Terminali</h3>
+            <span class="text-[11px] text-emerald-500 font-mono font-semibold">Çoklu Okutma Aktif</span>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <div class="sm:col-span-2">
+              <label class="text-[11px] text-sub block mb-1 font-semibold">Cihaz Seri No</label>
+              <input id="karsilama-laser-input" oninput="handleAutoScannerInput(this, sn => addKarsilamaStaged(sn))" onkeydown="if(event.key==='Enter'){ addKarsilamaStaged(this.value); this.value=''; }" type="text" placeholder="Barkod / QR okuyucu ile seri okutun..." class="theme-input w-full px-3.5 py-2.5 text-xs font-mono" />
+            </div>
+            <div>
+              <label class="text-[11px] text-sub block mb-1 font-semibold">İade Açıklaması</label>
+              <input id="karsilama-only-note" type="text" value="Abonelik İptali" class="theme-input w-full px-3 py-2.5 text-xs" />
+            </div>
+          </div>
+
+          <div class="subcard p-3.5 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs text-sub">Okutulan Cihaz Listesi (<strong id="karsilama-staged-count" class="text-main">0</strong> Adet)</span>
+              <div class="flex items-center gap-2">
+                <button onclick="clearKarsilamaStaged()" class="px-2.5 py-1.5 rounded-lg subcard text-mute text-xs">Temizle</button>
+                <button onclick="commitKarsilamaStaged()" class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs">
+                  İade Havuzuna Gönder
+                </button>
+              </div>
+            </div>
+            <div id="karsilama-staged-list" class="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto"></div>
+          </div>
+
+          <div class="pt-3 border-t flex items-center justify-between" style="border-color: var(--border-main);">
+            <span class="text-xs text-mute">Excel (.xlsx) dosyasından toplu aktarım:</span>
+            <label class="px-3 py-1.5 rounded-lg subcard hover:opacity-80 text-main text-xs font-semibold cursor-pointer transition">
+              Excel Dosyası Yükle
+              <input type="file" accept=".xlsx,.xls,.csv" onchange="handleKarsilamaOnlyExcel(event)" class="hidden" />
+            </label>
+          </div>
+        </div>
+
+        <div class="card p-5 space-y-3">
+          <h3 class="text-sm font-bold text-main">Karşılama İade Kayıt Geçmişi</h3>
+          <div id="karsilama-only-list" class="space-y-2 max-h-[420px] overflow-y-auto pr-1"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 1: DASHBOARD, PHYSICAL SHELVES & SLA -->
+    <!-- ========================================================================= -->
+    <section id="view-dashboard" class="space-y-5">
+      <div id="mismatch-banner" class="hidden rounded-xl bg-red-500/10 border border-red-500/35 p-4"></div>
+
+      <div class="grid grid-cols-2 md:grid-cols-6 gap-3" id="kpi-grid"></div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div class="card p-5 space-y-3.5">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 class="text-sm font-bold text-main">SLA Süresi Yaklaşan Cihazlar</h2>
+              <p class="text-[11px] text-mute">Sağlam & Sağlam Dönen: 90 Gün • Karantina & Arıza: 30 Gün</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="px-2.5 py-1 rounded-md bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 text-[11px] font-semibold flex items-center gap-1.5">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                Otomatik Bildirim
+              </span>
+              <button onclick="exportSlaAlertsToExcel()" class="export-icon-btn px-2.5 py-1 text-xs font-semibold flex items-center gap-1" title="SLA Listesini Excel'e Aktar">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>
+                <span>Excel</span>
+              </button>
+            </div>
+          </div>
+          <div id="sla-alerts-list" class="space-y-2 max-h-80 overflow-y-auto pr-1"></div>
+        </div>
+
+        <div class="card p-5 space-y-3.5">
+          <div class="flex items-center justify-between">
+            <div>
+              <h2 class="text-sm font-bold text-main">Fiziksel Depo Rafları (SOL & TURKCELL)</h2>
+              <p class="text-[11px] text-mute">Raf içeriğini görüntülemek veya dışa aktarmak için ilgili rafa tıklayın</p>
+            </div>
+            <button onclick="exportAllShelvesDetailToExcel()" class="export-icon-btn px-2.5 py-1 text-xs font-semibold flex items-center gap-1" title="Tüm Rafları Excel'e Aktar">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>
+              <span>Tüm Raflar Excel</span>
+            </button>
+          </div>
+          <div id="shelves-summary-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-80 overflow-y-auto pr-1"></div>
+        </div>
+      </div>
+
+      <div class="card p-5 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="text-sm font-bold text-main">Envanter ve Zimmet Listesi</h2>
+            <p class="text-[11px] text-mute">Tüm aktif depo stokları, saha zimmetleri ve kurulum geçmişi</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <input id="filter-search" oninput="renderDevicesTable()" type="text" placeholder="Seri no, model, raf veya personel..." class="theme-input px-3 py-1.5 text-xs w-52" />
+            <select id="filter-category" onchange="renderDevicesTable()" class="theme-input px-2.5 py-1.5 text-xs">
+              <option value="ALL">Tüm Başlıklar</option>
+              <option value="SOL">SOL Ürünler</option>
+              <option value="TURKCELL">TURKCELL (SPX)</option>
+            </select>
+            <select id="filter-logical" onchange="renderDevicesTable()" class="theme-input px-2.5 py-1.5 text-xs">
+              <option value="ALL">Tüm Raflar</option>
+              <option value="SAĞLAM">SAĞLAM (90G)</option>
+              <option value="SAĞLAM DÖNEN">SAĞLAM DÖNEN (90G)</option>
+              <option value="KARANTİNA">KARANTİNA (30G)</option>
+              <option value="ARIZA">ARIZA (30G)</option>
+            </select>
+            <select id="filter-location" onchange="renderDevicesTable()" class="theme-input px-2.5 py-1.5 text-xs">
+              <option value="ACTIVE">Aktif Stok (Depo + Saha)</option>
+              <option value="DEPODA">Sadece Depoda</option>
+              <option value="TEKNİSYENDE">Sadece Teknisyende</option>
+              <option value="MÜŞTERİYE_KURULDU">Müşteriye Kurulanlar</option>
+              <option value="ALL">Tümü</option>
+            </select>
+            <button onclick="exportFilteredInventoryToExcel()" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 transition">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>
+              <span>Excel'e Aktar (<span id="filtered-inv-count">0</span>)</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse text-xs corp-table">
+            <thead>
+              <tr>
+                <th>Seri No</th>
+                <th>Başlık</th>
+                <th>Model</th>
+                <th>Turkcell Rafı</th>
+                <th>Fiziksel Konum / Zimmet</th>
+                <th>Giriş Tarihi</th>
+                <th>SLA Durumu</th>
+                <th>Açıklama</th>
+              </tr>
+            </thead>
+            <tbody id="devices-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 2: TURKCELL & SOL REPORT SYNC -->
+    <!-- ========================================================================= -->
+    <section id="view-turkcell-sync" class="hidden space-y-5">
+      <div class="card p-5 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="text-sm font-bold text-main">Turkcell ve Superonline Stok Raporu Eşleştirme</h2>
+            <p class="text-xs text-mute">
+              SOL ve Turkcell (SPX) Excel raporları içeri aktarıldığında stoktan düşen cihazlar teknisyen zimmetinden otomatik düşülür, raf değişiklikleri için seri bazlı uyarı üretilir.
+            </p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="downloadSampleTurkcellExcel()" class="px-3 py-2 rounded-lg subcard hover:opacity-80 text-main text-xs font-semibold">
+              Excel Şablonu İndir
+            </button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div class="subcard p-4 space-y-3">
+            <h3 class="text-xs font-bold text-main uppercase tracking-wider">1. Rapor Dosyası Yükleme</h3>
+            <select id="sync-category" class="theme-input w-full px-3 py-2 text-xs">
+              <option value="SOL">1. Başlık: Superonline (SOL) Stok Raporu</option>
+              <option value="TURKCELL">2. Başlık: Turkcell (SPX) Stok Raporu</option>
+            </select>
+            <input id="sync-excel-file" type="file" accept=".xlsx,.xls,.csv" onchange="handleTurkcellExcelUpload(event)" class="w-full text-xs text-sub file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-sky-500/20 file:text-sky-500" />
+            <textarea id="sync-paste-area" rows="5" class="theme-input w-full p-2.5 text-xs font-mono" placeholder="Seri No | Model | Raf Statüsü | Giriş Tarihi"></textarea>
+            <button onclick="runTurkcellSyncFromTextarea()" class="w-full py-2.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold">
+              Raporu İçeri Aktar ve Eşleştir
+            </button>
+          </div>
+
+          <div class="subcard p-4 space-y-3">
+            <h3 class="text-xs font-bold text-main uppercase tracking-wider">2. Eşleştirme Özeti</h3>
+            <div id="sync-results-box" class="text-xs text-mute space-y-3">
+              <p>Rapor eşleştirildiğinde stoktan düşen ve raf statüsü değişen cihazlar burada listelenir.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 3: NEW SHIPMENT POOL -->
+    <!-- ========================================================================= -->
+    <section id="view-shipments" class="hidden space-y-5">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        <div class="card p-5 space-y-3.5 lg:col-span-4">
+          <h2 class="text-sm font-bold text-main">1. Bekleyen Sevkiyat Raporu Aktar</h2>
+          <p class="text-xs text-mute">Turkcell sevkiyat adımında bekleyen sıfır cihazların listesini sisteme yükleyin.</p>
+          <div class="space-y-2.5">
+            <input id="ship-code" type="text" placeholder="Sevkiyat / İrsaliye No" class="theme-input w-full px-3 py-2 text-xs" />
+            <select id="ship-category" class="theme-input w-full px-3 py-2 text-xs">
+              <option value="SOL">1. Başlık: SOL Ürünler</option>
+              <option value="TURKCELL">2. Başlık: TURKCELL (SPX)</option>
+            </select>
+            <input id="ship-model" type="text" value="Huawei HG8245X6 Wi-Fi 6 HGW" class="theme-input w-full px-3 py-2 text-xs" />
+            <input type="file" accept=".xlsx,.xls,.csv" onchange="handleShipmentExcelUpload(event)" class="w-full text-xs text-sub file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:bg-sky-500/20 file:text-sky-500 font-semibold" />
+            <textarea id="ship-serials" rows="4" placeholder="Her satıra bir seri numarası..." class="theme-input w-full p-2.5 text-xs font-mono"></textarea>
+            <button onclick="createShipmentBatch()" class="w-full py-2.5 rounded-lg bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-bold text-xs">
+              Sevkiyat Havuzunu Kaydet
+            </button>
+          </div>
+        </div>
+
+        <div class="card p-5 space-y-4 lg:col-span-8">
+          <div>
+            <h2 class="text-sm font-bold text-main">2. Fiziksel Gelen Cihaz Doğrulama ve Eşleştirme</h2>
+            <p class="text-xs text-mute">
+              Fiziksel teslim alınan cihazların seri numaralarını okutarak sevkiyat listesi ile karşılaştırın.
+            </p>
+          </div>
+          <div id="shipments-list" class="space-y-4"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 4: EKİP CİHAZ DAĞITIMI & TARİH/SLA BAZLI ZİMMET GEÇMİŞİ -->
+    <!-- ========================================================================= -->
+    <section id="view-dispatch" class="hidden space-y-5">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        <div class="card p-5 space-y-3.5 lg:col-span-4">
+          <div class="flex items-center justify-between gap-2">
+            <div>
+              <h2 class="text-sm font-bold text-main">SLA Öncelikli Dağıtım Listesi</h2>
+              <p class="text-[11px] text-mute">Kalan SLA süresine göre öncelikli çıkış yapılacak cihazlar</p>
+            </div>
+            <button onclick="exportFifoRecommendationsToExcel()" class="export-icon-btn px-2.5 py-1 text-xs font-semibold flex items-center gap-1" title="Excel'e Aktar">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>
+              <span>Excel</span>
+            </button>
+          </div>
+          <div id="fifo-priority-list" class="space-y-2 max-h-[440px] overflow-y-auto pr-1"></div>
+        </div>
+
+        <div class="card p-5 space-y-4 lg:col-span-8">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="text-sm font-bold text-main">Teknisyen Cihaz Dağıtım Terminali</h2>
+              <p class="text-xs text-mute">
+                Personeli seçip cihaz serilerini ardışık olarak okutun. Kayıt anında tarih, saat ve zimmet bildirimi otomatik işlenir.
+              </p>
+            </div>
+            <div class="flex items-center gap-2">
+              <div class="px-3 py-1.5 rounded-lg subcard text-center">
+                <div class="text-[10px] text-mute font-medium">Seçili Personel</div>
+                <div id="counter-active-tech-serials" class="font-mono font-extrabold text-sm text-sky-500">0 Seri</div>
+              </div>
+              <div class="px-3 py-1.5 rounded-lg subcard text-center border border-yellow-500/30">
+                <div class="text-[10px] text-mute font-medium">Toplam Okutulan</div>
+                <div id="counter-total-basket-serials" class="font-mono font-extrabold text-sm text-amber-500">0 Seri</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="subcard p-3.5">
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Teslim Alan Teknisyen / Ekip (BYS)</label>
+            <select id="dispatch-tech-select" onchange="updateDispatchCounters(); focusDispatchBarcodeInput();" class="theme-input w-full px-3.5 py-2.5 text-xs font-semibold"></select>
+          </div>
+
+          <div class="subcard p-4 space-y-2">
+            <div class="flex items-center justify-between">
+              <label class="text-xs font-bold text-main">Barkod / QR Seri Numarası Okutma</label>
+              <span id="last-scanned-badge" class="text-[11px] font-mono text-emerald-500 font-semibold">Hazır</span>
+            </div>
+            <input id="dispatch-serial-input" oninput="handleAutoScannerInput(this, sn => addDeviceToDispatchBasket(sn))" onkeydown="if(event.key==='Enter'){ addDeviceToDispatchBasket(this.value); this.value=''; }" type="text" placeholder="Cihaz seri numarasını okutun..." class="theme-input w-full px-4 py-2.5 text-sm font-mono" />
+          </div>
+
+          <div id="dispatch-fifo-warning" class="hidden p-3 rounded-lg bg-amber-500/15 border border-amber-500/35 text-amber-500 text-xs font-medium"></div>
+
+          <div id="last-commit-summary" class="hidden p-3.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-500 text-xs font-medium"></div>
+
+          <div class="space-y-3 pt-1">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <h3 class="text-xs font-bold uppercase tracking-wider text-mute">
+                Dağıtım Listesi (<span id="basket-inline-count" class="text-main">0</span> Seri)
+              </h3>
+              <button onclick="commitDailyDispatch()" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow transition">
+                Dağıtımı Kaydet
+              </button>
+            </div>
+            <div id="dispatch-basket-view" class="space-y-2.5 max-h-64 overflow-y-auto pr-1"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card p-5 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="text-sm font-bold text-main">Teknisyenlere Verilen Cihazlar Listesi ve SLA Durumu</h2>
+            <p class="text-xs text-mute">Yıl, ay veya tarih aralığına göre verilen tüm cihazları filtreleyip Excel olarak dışa aktarabilirsiniz.</p>
+          </div>
+          <button onclick="exportFilteredDispatchHistoryToExcel()" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 transition">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>
+            <span>Excel'e Aktar (<span id="hist-filtered-count">0</span>)</span>
+          </button>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5 subcard p-3.5 text-xs">
+          <div>
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Yıl</label>
+            <select id="hist-year-filter" onchange="onYearOrMonthFilterChange()" class="theme-input w-full px-3 py-1.5">
+              <option value="ALL">Tüm Yıllar</option>
+              <option value="2026">2026</option>
+              <option value="2025">2025</option>
+              <option value="2024">2024</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Ay</label>
+            <select id="hist-month-filter" onchange="onYearOrMonthFilterChange()" class="theme-input w-full px-3 py-1.5">
+              <option value="ALL">Tüm Aylar</option>
+              <option value="01">01 - Ocak</option>
+              <option value="02">02 - Şubat</option>
+              <option value="03">03 - Mart</option>
+              <option value="04">04 - Nisan</option>
+              <option value="05">05 - Mayıs</option>
+              <option value="06">06 - Haziran</option>
+              <option value="07">07 - Temmuz</option>
+              <option value="08">08 - Ağustos</option>
+              <option value="09">09 - Eylül</option>
+              <option value="10">10 - Ekim</option>
+              <option value="11">11 - Kasım</option>
+              <option value="12">12 - Aralık</option>
+            </select>
+          </div>
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <label class="text-[11px] text-mute font-semibold">Başlangıç Tarihi</label>
+              <button onclick="clearCustomDateRange()" class="text-[10px] text-sky-500 hover:underline">Sıfırla</button>
+            </div>
+            <div class="relative flex items-center">
+              <input id="hist-date-start" onclick="if(this.showPicker) this.showPicker()" onchange="onCustomDateRangeChange()" type="date" class="theme-input w-full pl-3 pr-8 py-1.5 cursor-pointer" />
+              <button type="button" onclick="const el=document.getElementById('hist-date-start'); if(el.showPicker) el.showPicker(); else el.focus();" class="absolute right-2 text-mute hover:text-main" title="Takvim">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div>
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Bitiş Tarihi</label>
+            <div class="relative flex items-center">
+              <input id="hist-date-end" onclick="if(this.showPicker) this.showPicker()" onchange="onCustomDateRangeChange()" type="date" class="theme-input w-full pl-3 pr-8 py-1.5 cursor-pointer" />
+              <button type="button" onclick="const el=document.getElementById('hist-date-end'); if(el.showPicker) el.showPicker(); else el.focus();" class="absolute right-2 text-mute hover:text-main" title="Takvim">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div>
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Teknisyen / Ekip</label>
+            <select id="hist-tech-filter" onchange="renderDispatchHistoryTable()" class="theme-input w-full px-3 py-1.5">
+              <option value="ALL">Tüm Teknisyenler</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto max-h-96 overflow-y-auto">
+          <table class="w-full text-left border-collapse text-xs corp-table">
+            <thead>
+              <tr>
+                <th>Dağıtım Tarihi & Saati</th>
+                <th>Seri No</th>
+                <th>Başlık</th>
+                <th>Model</th>
+                <th>Çıktığı Raf</th>
+                <th>Teknisyen</th>
+                <th>Ekip</th>
+                <th>SLA Süresi</th>
+                <th>Durum</th>
+              </tr>
+            </thead>
+            <tbody id="dispatch-history-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 5: TRANSFER POOL APPROVAL & CUSTOMER RETURN POOL APPROVAL -->
+    <!-- ========================================================================= -->
+    <section id="view-returns" class="hidden space-y-5">
+      <div class="card p-5 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="text-sm font-bold text-main">1. Teknisyen Cihaz Transfer Onay Havuzu</h2>
+            <p class="text-xs text-mute">
+              Teknisyenler arası saha cihaz transferleri ve kullanılmadan merkez depoya iade edilen sağlam cihazların onay ekranı.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button onclick="exportTransferPoolToExcel()" class="export-icon-btn px-3 py-1.5 text-xs font-semibold flex items-center gap-1">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>
+              <span>Excel'e Aktar</span>
+            </button>
+            <button onclick="approveSelectedTransfers()" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition shadow">
+              Seçili Transferleri Onayla
+            </button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-3">
+          <div class="subcard p-3.5 lg:col-span-6 flex flex-col justify-between gap-2">
+            <label class="text-[11px] font-semibold text-sub block">Seri Numarası Okutarak Transfer Onayla</label>
+            <input id="depocu-transfer-verify-input" oninput="handleAutoScannerInput(this, sn => verifyAndApproveTransferBySerial(sn))" onkeydown="if(event.key==='Enter'){ verifyAndApproveTransferBySerial(this.value); this.value=''; }" type="text" placeholder="Transfer havuzundaki cihaz serisini okutun..." class="theme-input w-full px-3.5 py-2 text-xs font-mono" />
+          </div>
+
+          <div class="subcard p-3.5 lg:col-span-6 space-y-2">
+            <div class="text-[11px] font-semibold text-sub">Merkezden Transfer Kaydı Oluştur</div>
+            <div class="grid grid-cols-1 sm:grid-cols-4 gap-2">
+              <select id="admin-tr-from" onchange="populateAdminTransferSerials()" class="theme-input px-2.5 py-1.5 text-xs"></select>
+              <select id="admin-tr-serial" class="theme-input px-2.5 py-1.5 text-xs font-mono"></select>
+              <select id="admin-tr-target" class="theme-input px-2.5 py-1.5 text-xs"></select>
+              <button onclick="createAdminTransferRequest()" class="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs">
+                Havuza Ekle
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div id="transfer-pool-table-wrap" class="overflow-x-auto"></div>
+      </div>
+
+      <div class="card p-5 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="text-sm font-bold text-main">2. Müşteri Söküm ve İptal İade Kabul Havuzu (Karantina 30 Gün SLA)</h2>
+            <p class="text-xs text-mute">
+              Karşılama birimi ve saha ekiplerinden gelen müşteri iade cihazlarının fiziksel kabul ve Karantina rafına aktarım ekranı.
+            </p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="exportReturnPoolToExcel()" class="export-icon-btn px-3 py-1.5 text-xs font-semibold flex items-center gap-1">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>
+              <span>Excel'e Aktar</span>
+            </button>
+            <button onclick="approveAllPendingReturns()" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition">
+              Seçili İadeleri Onayla ve Rafa Al
+            </button>
+          </div>
+        </div>
+
+        <div class="subcard p-3.5 flex flex-wrap items-center justify-between gap-3">
+          <div class="flex-1 min-w-[260px]">
+            <label class="text-[11px] font-semibold text-sub block mb-1">Seri Numarası Okutarak Fiziksel İade Onayla</label>
+            <input id="depocu-return-verify-input" oninput="handleAutoScannerInput(this, sn => verifyAndApproveReturnBySerial(sn))" onkeydown="if(event.key==='Enter'){ verifyAndApproveReturnBySerial(this.value); this.value=''; }" type="text" placeholder="Fiziksel teslim alınan iade cihaz serisini okutun..." class="theme-input w-full px-3.5 py-2 text-xs font-mono" />
+          </div>
+          <div class="flex items-center gap-3 text-xs">
+            <div class="px-3 py-2 rounded-lg card">
+              <span class="text-mute">Karşılama Bekleyen:</span>
+              <strong id="pool-count-karsilama" class="text-sky-500 ml-1">0</strong>
+            </div>
+            <div class="px-3 py-2 rounded-lg card">
+              <span class="text-mute">Saha Ekibi Bekleyen:</span>
+              <strong id="pool-count-teknisyen" class="text-amber-500 ml-1">0</strong>
+            </div>
+          </div>
+        </div>
+
+        <div id="return-pool-table-wrap" class="overflow-x-auto"></div>
+      </div>
+    </section>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 6: MONTHLY WAREHOUSE SHELF COUNT & VEHICLE COUNT MONITOR -->
+    <!-- ========================================================================= -->
+    <section id="view-counts" class="hidden space-y-5">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        <div class="card p-5 space-y-3.5 lg:col-span-7">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 class="text-sm font-bold text-main">Aylık Fiziksel Depo Raf Sayımı</h2>
+              <p class="text-[11px] text-mute">
+                Fiziksel raf adetlerini doğrulayın. Adet uyuşmazlığında seri bazlı fark tespit ekranı otomatik açılır.
+              </p>
+            </div>
+            <button onclick="exportAllShelvesDetailToExcel()" class="export-icon-btn px-2.5 py-1 text-xs font-semibold flex items-center gap-1">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>
+              <span>Tüm Raflar Excel</span>
+            </button>
+          </div>
+          <div id="monthly-shelf-count-list" class="space-y-3 max-h-[560px] overflow-y-auto pr-1"></div>
+        </div>
+
+        <div class="card p-5 space-y-3.5 lg:col-span-5">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 class="text-sm font-bold text-main">Teknisyen Haftalık Araç Sayım Durumu</h2>
+              <p class="text-[11px] text-mute">Personel bazlı okutulan ve eksik çıkan seri numaraları</p>
+            </div>
+            <button onclick="exportAllTechVehicleCountsToExcel()" class="export-icon-btn px-2.5 py-1 text-xs font-semibold flex items-center gap-1">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>
+              <span>Tümü Excel</span>
+            </button>
+          </div>
+          <div id="tech-vehicle-status-list" class="space-y-2.5 max-h-[560px] overflow-y-auto pr-1"></div>
+        </div>
+      </div>
+
+      <div class="card p-5 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="text-sm font-bold text-main">Tamamlanan Sayım Kayıtları ve Seri Fark Raporları</h3>
+            <p class="text-[11px] text-mute">Depo rafları ve teknik ekip araç sayım geçmişi</p>
+          </div>
+          <button onclick="exportCountLogsToExcel()" class="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 transition">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>
+            <span>Excel'e Aktar (<span id="count-logs-filtered-num">0</span>)</span>
+          </button>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5 subcard p-3.5 text-xs">
+          <div>
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Raf, Personel veya Seri Ara</label>
+            <input id="clog-filter-search" oninput="renderCountLogsTable()" type="text" placeholder="Raf, personel veya seri no..." class="theme-input w-full px-3 py-1.5" />
+          </div>
+          <div>
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Sayım Türü</label>
+            <select id="clog-filter-type" onchange="renderCountLogsTable()" class="theme-input w-full px-3 py-1.5">
+              <option value="ALL">Tümü (Depo + Araçlar)</option>
+              <option value="AYLIK_DEPO_RAF">Aylık Depo Raf Sayımı</option>
+              <option value="HAFTALIK_ARAÇ">Haftalık Teknisyen Araç Sayımı</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Sayım Durumu</label>
+            <select id="clog-filter-status" onchange="renderCountLogsTable()" class="theme-input w-full px-3 py-1.5">
+              <option value="ALL">Tüm Durumlar</option>
+              <option value="DISCREPANCY">Sadece Fark / Eksik Çıkanlar</option>
+              <option value="TAM">Sadece Tam Eşleşenler</option>
+            </select>
+          </div>
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <label class="text-[11px] text-mute font-semibold">Başlangıç Tarihi</label>
+              <button onclick="clearCountLogsDateFilter()" class="text-[10px] text-sky-500 hover:underline">Sıfırla</button>
+            </div>
+            <div class="relative flex items-center">
+              <input id="clog-date-start" onclick="if(this.showPicker) this.showPicker()" onchange="renderCountLogsTable()" type="date" class="theme-input w-full pl-3 pr-8 py-1.5 cursor-pointer" />
+              <button type="button" onclick="const el=document.getElementById('clog-date-start'); if(el.showPicker) el.showPicker(); else el.focus();" class="absolute right-2 text-mute hover:text-main">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div>
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Bitiş Tarihi</label>
+            <div class="relative flex items-center">
+              <input id="clog-date-end" onclick="if(this.showPicker) this.showPicker()" onchange="renderCountLogsTable()" type="date" class="theme-input w-full pl-3 pr-8 py-1.5 cursor-pointer" />
+              <button type="button" onclick="const el=document.getElementById('clog-date-end'); if(el.showPicker) el.showPicker(); else el.focus();" class="absolute right-2 text-mute hover:text-main">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div id="count-logs-wrap" class="overflow-x-auto"></div>
+      </div>
+    </section>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 7: BYS PERSONNEL & PHYSICAL SHELVES (YÖNETİCİ ONLY) -->
+    <!-- ========================================================================= -->
+    <section id="view-personnel" class="hidden space-y-5">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div class="card p-5 space-y-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <h2 class="text-sm font-bold text-main">BYS Personel ve Yetki Yönetimi</h2>
+              <p class="text-[11px] text-mute">Kurumsal kullanıcı hesapları ve ekip tanımları</p>
+            </div>
+            <label class="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold cursor-pointer">
+              BYS Excel Yükle
+              <input type="file" accept=".xlsx,.xls,.csv" onchange="handleBysExcelUpload(event)" class="hidden" />
+            </label>
+          </div>
+
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 subcard p-3">
+            <input id="p-code" type="text" placeholder="Sicil No" class="theme-input px-2.5 py-1.5 text-xs" />
+            <input id="p-uname" type="text" placeholder="Kullanıcı Adı" class="theme-input px-2.5 py-1.5 text-xs" />
+            <input id="p-pass" type="text" value="123456" placeholder="Şifre" class="theme-input px-2.5 py-1.5 text-xs" />
+            <select id="p-role" class="theme-input px-2.5 py-1.5 text-xs">
+              <option value="TEKNİSYEN">TEKNİSYEN</option>
+              <option value="KARŞILAMA">KARŞILAMA</option>
+              <option value="DEPOCU">DEPOCU</option>
+              <option value="YÖNETİCİ">YÖNETİCİ</option>
+            </select>
+            <input id="p-name" type="text" placeholder="Ad Soyad" class="theme-input px-2.5 py-1.5 text-xs" />
+            <input id="p-team" type="text" placeholder="Ekip / Birim" class="theme-input px-2.5 py-1.5 text-xs" />
+            <input id="p-phone" type="text" placeholder="Telefon" class="theme-input px-2.5 py-1.5 text-xs" />
+            <input id="p-email" type="text" placeholder="E-posta" class="theme-input px-2.5 py-1.5 text-xs" />
+            <button onclick="addSinglePersonnel()" class="col-span-2 sm:col-span-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">
+              Personel Kaydet
+            </button>
+          </div>
+
+          <div id="personnel-table-wrap" class="overflow-x-auto max-h-80 overflow-y-auto"></div>
+        </div>
+
+        <div class="card p-5 space-y-4">
+          <div>
+            <h2 class="text-sm font-bold text-main">Fiziksel Raf Yönetimi</h2>
+            <p class="text-[11px] text-mute">
+              Raf tanımlama, isim güncelleme, cihaz aktarma ve raf silme işlemleri
+            </p>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 subcard p-3">
+            <input id="sh-code" type="text" placeholder="Raf Kodu (SOL05)" class="theme-input px-2.5 py-1.5 text-xs" />
+            <select id="sh-cat" class="theme-input px-2.5 py-1.5 text-xs">
+              <option value="SOL">SOL</option>
+              <option value="TURKCELL">TURKCELL</option>
+            </select>
+            <select id="sh-logical" class="theme-input px-2.5 py-1.5 text-xs">
+              <option value="SAĞLAM">SAĞLAM (90G)</option>
+              <option value="SAĞLAM DÖNEN">SAĞLAM DÖNEN (90G)</option>
+              <option value="KARANTİNA">KARANTİNA (30G)</option>
+              <option value="ARIZA">ARIZA (30G)</option>
+            </select>
+            <button onclick="createPhysicalShelf()" class="px-3 py-1.5 rounded-lg bg-yellow-400 hover:bg-yellow-300 text-slate-950 text-xs font-bold">
+              Raf Ekle
+            </button>
+          </div>
+          <div id="shelves-config-list" class="space-y-2.5 max-h-96 overflow-y-auto pr-1"></div>
+        </div>
+      </div>
+
+      <!-- Production Go-Live & Backup Panel (YÖNETİCİ ONLY) -->
+      <div class="card p-5 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="text-sm font-bold text-main">Veri Yedekleme ve Canlı Operasyona Geçiş Yönetimi</h3>
+            <p class="text-xs text-mute">
+              Gerçek BYS personel ve Turkcell/SOL stok raporlarınızı yüklemeden önce sistemdeki başlangıç verilerini sıfırlayabilir veya tam veritabanı yedeği alabilirsiniz.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button onclick="downloadFullDatabaseBackupJson()" class="px-3.5 py-2 rounded-lg subcard hover:border-sky-500/50 text-sky-500 text-xs font-bold transition">
+              Tam Veritabanı Yedeği İndir (.JSON)
+            </button>
+            <label class="px-3.5 py-2 rounded-lg subcard hover:border-emerald-500/50 text-emerald-500 text-xs font-bold cursor-pointer transition">
+              Yedekten Geri Yükle (.JSON)
+              <input type="file" accept=".json" onchange="handleRestoreDatabaseBackupJson(event)" class="hidden" />
+            </label>
+            <button onclick="resetSampleDataForProduction(false)" class="px-3.5 py-2 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 border border-amber-500/30 text-xs font-bold transition">
+              Stok ve Hareket Verilerini Sıfırla (Raflar ve Personel Kalsın)
+            </button>
+            <button onclick="resetSampleDataForProduction(true)" class="px-3.5 py-2 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-500 border border-red-500/30 text-xs font-bold transition">
+              Tüm Stok ve Personeli Sıfırla (Sadece Raflar ve Yönetici Kalsın)
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 8: AUTOMATIC NOTIFICATIONS LOG & GATEWAY CONFIG -->
+    <!-- ========================================================================= -->
+    <section id="view-notifications" class="hidden space-y-5">
+      <!-- Gateway Configuration Card (Visible to YÖNETİCİ) -->
+      <div id="notif-gateway-config-card" class="card p-5 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 class="text-sm font-bold text-main">Otomatik WhatsApp ve E-Posta Servis Bağlantı Ayarları</h2>
+            <p class="text-xs text-mute">
+              Sistemdeki tüm otomatik bildirimlerin gerçek e-posta adreslerine ve WhatsApp numaralarına iletilmesi için ücretsiz servis bağlantı adreslerini tanımlayın.
+            </p>
+          </div>
+          <button onclick="toggleAppsScriptGuide()" class="px-3 py-1.5 rounded-lg subcard hover:border-sky-500/50 text-sky-500 text-xs font-semibold transition">
+            Ücretsiz Otomatik Mail & WhatsApp Kurulum Kodu
+          </button>
+        </div>
+
+        <div id="apps-script-guide-box" class="hidden subcard p-4 space-y-2.5 text-xs">
+          <div class="font-bold text-main">1 Dakikada Ücretsiz Otomatik E-Posta + Google Drive Kalıcı Bulut Veritabanı Bağlantısı:</div>
+          <p class="text-sub">
+            1. <strong>script.google.com</strong> adresine gidin ve <strong>Yeni Proje</strong> oluşturun.<br/>
+            2. Aşağıdaki kodu yapıştırıp sağ üstten <strong>Dağıt &rarr; Yeni Dağıtım &rarr; Web Uygulaması (Erişim: Herkes)</strong> seçerek dağıtın.<br/>
+            3. Size verilen <code>https://script.google.com/macros/s/.../exec</code> adresini aşağıdaki <strong>Otomatik E-Posta & Bulut Veritabanı URL</strong> kutusuna (veya Render.com <code>CLOUD_DB_URL</code> değişkenine) yapıştırın. Hem otomatik mailleriniz gönderilir hem de tüm verileriniz Google Drive'ınızda kalıcı olarak saklanır.
+          </p>
+          <pre class="p-3 rounded-lg bg-slate-950 text-emerald-400 font-mono text-[11px] overflow-x-auto">var DB_FILE_NAME = "KaradenizECM_Bulut_Veritabani.json";
+
+function doGet(e) {
+  var files = DriveApp.getFilesByName(DB_FILE_NAME);
+  if (files.hasNext()) {
+    var content = files.next().getBlob().getDataAsString();
+    return ContentService.createTextOutput(JSON.stringify({ ok: true, backup: JSON.parse(content) }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+  return ContentService.createTextOutput(JSON.stringify({ ok: false })).setMimeType(ContentService.MimeType.JSON);
+}
+
+function doPost(e) {
+  var data = JSON.parse(e.postData.contents);
+  if (data.action === "SAVE_DB_BACKUP" && data.backup) {
+    var files = DriveApp.getFilesByName(DB_FILE_NAME);
+    var jsonStr = JSON.stringify(data.backup);
+    if (files.hasNext()) { files.next().setContent(jsonStr); }
+    else { DriveApp.createFile(DB_FILE_NAME, jsonStr, MimeType.PLAIN_TEXT); }
+    return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
+  }
+  var emails = (data.to || "").split(",").map(function(s){ return s.trim(); }).filter(Boolean);
+  emails.forEach(function(mail) {
+    MailApp.sendEmail({ to: mail, subject: data.subject, body: data.text });
+  });
+  return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
+}</pre>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div>
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Otomatik E-Posta Servis URL (Apps Script / Webhook)</label>
+            <input id="gw-email-url" type="text" placeholder="https://script.google.com/macros/s/.../exec" class="theme-input w-full px-3 py-2 text-xs font-mono" />
+          </div>
+          <div>
+            <label class="text-[11px] text-mute block mb-1 font-semibold">Otomatik WhatsApp Servis URL (Gateway / Köprü)</label>
+            <input id="gw-wa-url" type="text" placeholder="http://localhost:8080/send-message veya Webhook URL" class="theme-input w-full px-3 py-2 text-xs font-mono" />
+          </div>
+          <div class="flex items-end gap-2">
+            <button onclick="saveGatewaySettings()" class="flex-1 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition">
+              Ayarları Kaydet
+            </button>
+            <button onclick="sendTestGatewayNotification()" class="px-3.5 py-2 rounded-lg subcard hover:border-yellow-500/50 text-main text-xs font-semibold transition">
+              Test Gönder
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card p-5 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="text-sm font-bold text-main">Otomatik WhatsApp ve E-Posta Bildirim Kayıtları</h2>
+            <p class="text-xs text-mute">Sistem tarafından ilgili personele ve yöneticilere iletilen tüm operasyon bildirimleri</p>
+          </div>
+          <button onclick="exportNotificationsToExcel()" class="export-icon-btn px-3 py-1.5 text-xs font-semibold flex items-center gap-1">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>
+            <span>Bildirimleri Excel'e Aktar</span>
+          </button>
+        </div>
+        <div id="notifications-list" class="space-y-2 max-h-[540px] overflow-y-auto pr-1"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "turkcell-sol-depo-saas",
+  "version": "1.0.0",
+  "description": "Turkcell & Superonline Bayi Depo, Fiziksel Raf, SLA, Zimmet, İade Havuzu ve Sayım Takip SaaS Sistemi",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
