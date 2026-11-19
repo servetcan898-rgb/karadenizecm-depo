@@ -424,9 +424,10 @@ function buildMultiSheetXlsxBuffer(sheets) {
   return createZipBuffer(zipEntries);
 }
 
-// ==================== DEFAULT SLA EXECUTIVE REPORT RECIPIENTS ====================
+// ==================== DEFAULT NOTIFICATION RECIPIENTS ====================
 const DEFAULT_SLA_REPORT_TO = 'hasan.kadioglu@bireysel.superonline.net';
 const DEFAULT_SLA_REPORT_CC = 'dogancan.aksoy@guraks.com.tr, mehmet.celep@sam.superonline.net, servetcan.kucuksolak@sam.superonline.net';
+const DEFAULT_DISPATCH_REPORT_CC = 'hasan.kadioglu@bireysel.superonline.net, servetcan.kucuksolak@sam.superonline.net';
 
 function getSettingValue(key, fallback = '') {
   const row = db.prepare(`SELECT value FROM gateway_settings WHERE key = ?`).get(key);
@@ -806,45 +807,263 @@ async function dispatchAutoNotification({ recipient_name, recipient_phone, recip
   return { ok: mailSent, mail_sent: mailSent, error: mailError };
 }
 
+function getIstanbulDateParts() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Istanbul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
+  const get = (t) => parts.find(p => p.type === t)?.value || '00';
+  const hour = Number(get('hour')) % 24;
+  const minute = Number(get('minute'));
+  return {
+    dateStr: `${get('year')}-${get('month')}-${get('day')}`,
+    hour,
+    minute
+  };
+}
+
+let slaSendInProgress = false;
 async function sendSlaExecutiveDashboardReport(forceSend = false) {
-  const report = buildSlaExecutiveReport();
+  const tr = getIstanbulDateParts();
   const lastSent = getSettingValue('last_sla_executive_sent_date', '');
-  if (!forceSend && lastSent === report.todayStr) {
-    return { ok: true, skipped: true, reason: 'Bugün zaten gönderildi.' };
-  }
-  if (!forceSend && report.totalCritical === 0) {
-    return { ok: true, skipped: true, reason: 'Kritik SLA cihazı yok.' };
-  }
 
-  const res = await dispatchAutoNotification({
-    recipient_name: 'Hasan İlker Kadıoğlu (TO) | Doğancan Aksoy, Mehmet Salih Celep, Servetcan Küçüksolak (CC)',
-    recipient_phone: '',
-    recipient_email: report.toEmail,
-    recipient_cc: report.ccEmail,
-    category: 'OTOMATİK_SLA_DASHBOARD',
-    title: report.subject,
-    message: report.textBody,
-    htmlBody: report.htmlBody,
-    attachment: {
-      filename: report.filename,
-      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      base64: report.xlsxBuffer.toString('base64')
+  if (!forceSend) {
+    // Scheduled strictly at 23:59 Europe/Istanbul time, once per day
+    if (!(tr.hour === 23 && tr.minute >= 59)) {
+      return { ok: true, skipped: true, reason: 'Saat 23:59 (TR) bekleniyor.' };
     }
-  });
-
-  if (res.mail_sent || !forceSend) {
-    setSettingValue('last_sla_executive_sent_date', report.todayStr);
+    if (lastSent === tr.dateStr) {
+      return { ok: true, skipped: true, reason: 'Bugünkü 23:59 raporu zaten gönderildi.' };
+    }
+    if (slaSendInProgress) {
+      return { ok: true, skipped: true, reason: 'Gönderim devam ediyor.' };
+    }
   }
+
+  slaSendInProgress = true;
+  try {
+    const report = buildSlaExecutiveReport();
+    if (!forceSend && report.totalCritical === 0) {
+      setSettingValue('last_sla_executive_sent_date', tr.dateStr);
+      return { ok: true, skipped: true, reason: 'Kritik SLA cihazı yok.' };
+    }
+
+    const res = await dispatchAutoNotification({
+      recipient_name: 'Hasan İlker Kadıoğlu (TO) | Doğancan Aksoy, Mehmet Salih Celep, Servetcan Küçüksolak (CC)',
+      recipient_phone: '',
+      recipient_email: report.toEmail,
+      recipient_cc: report.ccEmail,
+      category: 'OTOMATİK_SLA_DASHBOARD',
+      title: report.subject,
+      message: report.textBody,
+      htmlBody: report.htmlBody,
+      attachment: {
+        filename: report.filename,
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        base64: report.xlsxBuffer.toString('base64')
+      }
+    });
+
+    // Only mark scheduled date on automatic 23:59 run (manual test sends during the day won't cancel 23:59 run)
+    if (!forceSend && res.mail_sent) {
+      setSettingValue('last_sla_executive_sent_date', tr.dateStr);
+    }
+
+    return {
+      ok: res.mail_sent,
+      error: res.error,
+      to: report.toEmail,
+      cc: report.ccEmail,
+      filename: report.filename,
+      totalCritical: report.totalCritical,
+      depodaCount: report.depodaCount,
+      techCount: report.techCount
+    };
+  } finally {
+    slaSendInProgress = false;
+  }
+}
+
+// ==================== #2 TECHNICIAN DISPATCH EMAIL (HTML + 2-SHEET EXCEL) ====================
+function buildTechnicianDispatchEmail(person, batchDevices, dispatchedBy) {
+  const now = new Date();
+  const tr = getIstanbulDateParts();
+  const [yyyy, mm, dd] = tr.dateStr.split('-');
+  const trDateOnly = `${dd}.${mm}.${yyyy}`;
+  const trDateTime = now.toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+
+  // All active devices currently on this technician (devices dropped from stock / installed to customer are automatically excluded!)
+  const allActiveOnTech = db.prepare(`
+    SELECT * FROM devices
+    WHERE assigned_personnel_id = ? AND location_status = 'TEKNİSYENDE'
+  `).all(person.id).map(d => ({ ...d, ...computeSLA(d) })).sort((a, b) => a.days_remaining - b.days_remaining);
+
+  // Batch devices enriched with SLA and from_physical_shelf
+  const todayDevices = batchDevices.map(d => ({ ...d, ...computeSLA(d) })).sort((a, b) => a.days_remaining - b.days_remaining);
+  const criticalOnTech = allActiveOnTech.filter(d => d.days_remaining <= 10).length;
+
+  const slaLabel = (d) => d.days_remaining <= 0
+    ? `SLA AŞILDI (${Math.abs(d.days_remaining)}G Geçti)`
+    : (d.days_remaining <= 10 ? `KRİTİK (Son ${d.days_remaining}G)` : `${d.days_remaining} Gün Kaldı`);
+
+  const slaColor = (d) => d.days_remaining <= 10 ? '#dc2626' : (d.days_remaining <= 20 ? '#d97706' : '#059669');
+
+  // 1. Build 2-Sheet Real Excel (.xlsx)
+  const sheet1Cols = [
+    { header: 'Seri No', width: 22 },
+    { header: 'Kategori', width: 12 },
+    { header: 'Model / Kalem Tanımı', width: 32 },
+    { header: 'Mantıksal Raf', width: 16 },
+    { header: 'Çıktığı Fiziksel Raf', width: 18 },
+    { header: 'Alım Tarihi', width: 18 },
+    { header: 'Son İşlem Tarihi', width: 16 },
+    { header: 'SLA Limiti (Gün)', width: 15 },
+    { header: 'Geçen Gün', width: 12 },
+    { header: 'Kalan SLA (Gün)', width: 15 },
+    { header: 'SLA Durumu', width: 22 }
+  ];
+
+  const sheet1Rows = todayDevices.map(d => [
+    d.serial_no, d.category, d.model_name, d.logical_shelf,
+    d.from_physical_shelf || '-', trDateTime, d.sla_entry_date,
+    d.sla_max_days, d.days_elapsed, d.days_remaining, slaLabel(d)
+  ]);
+
+  const sheet2Cols = [
+    { header: 'Seri No', width: 22 },
+    { header: 'Kategori', width: 12 },
+    { header: 'Model / Kalem Tanımı', width: 32 },
+    { header: 'Mantıksal Raf', width: 16 },
+    { header: 'Zimmet Tarihi', width: 18 },
+    { header: 'Son İşlem Tarihi', width: 16 },
+    { header: 'SLA Limiti (Gün)', width: 15 },
+    { header: 'Geçen Gün', width: 12 },
+    { header: 'Kalan SLA (Gün)', width: 15 },
+    { header: 'SLA Durumu', width: 22 }
+  ];
+
+  const sheet2Rows = allActiveOnTech.map(d => [
+    d.serial_no, d.category, d.model_name, d.logical_shelf,
+    d.assigned_at ? new Date(d.assigned_at).toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' }) : trDateTime,
+    d.sla_entry_date, d.sla_max_days, d.days_elapsed, d.days_remaining, slaLabel(d)
+  ]);
+
+  const xlsxBuffer = buildMultiSheetXlsxBuffer([
+    { name: 'Bugun_Alinan_Cihazlar', columns: sheet1Cols, rows: sheet1Rows },
+    { name: 'Uzerimdeki_Tum_Cihazlar', columns: sheet2Cols, rows: sheet2Rows }
+  ]);
+
+  const safeName = String(person.full_name || 'Teknisyen')
+    .replace(/İ/g, 'I').replace(/ı/g, 'i').replace(/Ş/g, 'S').replace(/ş/g, 's')
+    .replace(/Ğ/g, 'G').replace(/ğ/g, 'g').replace(/Ü/g, 'U').replace(/ü/g, 'u')
+    .replace(/Ö/g, 'O').replace(/ö/g, 'o').replace(/Ç/g, 'C').replace(/ç/g, 'c')
+    .replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+  const filename = `KaradenizECM_Zimmet_${safeName}_${tr.dateStr}.xlsx`;
+
+  // 2. Build Corporate HTML Table Email
+  const tableRowsHtml = todayDevices.map(d => `
+    <tr>
+      <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-family:Consolas,monospace;font-size:12px;font-weight:700;color:#0f172a;">${xmlEscape(d.serial_no)}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;">
+        <span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700;background:${d.category === 'SOL' ? '#dbeafe' : '#fef3c7'};color:${d.category === 'SOL' ? '#1d4ed8' : '#b45309'};">${xmlEscape(d.category)}</span>
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;color:#0f172a;">${xmlEscape(d.model_name)}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;color:#334155;">${xmlEscape(d.logical_shelf)}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-family:Consolas,monospace;font-size:12px;color:#0369a1;font-weight:700;">${xmlEscape(d.from_physical_shelf || '-')}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:12px;font-weight:700;color:${slaColor(d)};">${xmlEscape(slaLabel(d))}</td>
+    </tr>
+  `).join('');
+
+  const htmlBody = `
+  <div style="font-family:'Segoe UI',Arial,sans-serif;background:#f1f5f9;padding:20px;color:#0f172a;">
+    <div style="max-width:760px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #cbd5e1;">
+      <div style="background:#0f172a;padding:20px 24px;border-bottom:4px solid #facc15;">
+        <div style="font-size:11px;letter-spacing:1.4px;color:#facc15;font-weight:700;text-transform:uppercase;">KARADENİZ EÇM • DEPO VE ZİMMET YÖNETİM SİSTEMİ</div>
+        <div style="font-size:19px;font-weight:800;color:#ffffff;margin-top:4px;">Malzeme Alım ve Zimmet Teslimat Bildirimi</div>
+        <div style="font-size:12px;color:#cbd5e1;margin-top:4px;">Tarih / Saat: ${trDateTime} &nbsp;|&nbsp; Teslim Eden: ${xmlEscape(dispatchedBy || 'Depo Sorumlusu')}</div>
+      </div>
+
+      <div style="padding:22px 24px;">
+        <p style="font-size:14px;line-height:1.6;color:#0f172a;margin:0 0 18px 0;">
+          Sayın <strong>${xmlEscape(person.full_name)}</strong>, <strong>${trDateOnly}</strong> tarihli malzeme alım detaylarınız aşağıda ve ekteki tabloda yer almaktadır.
+        </p>
+
+        <!-- KPI Strip -->
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:8px 0;margin:0 -8px 20px -8px;">
+          <tr>
+            <td width="33%" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px;text-align:center;">
+              <div style="font-size:11px;font-weight:700;color:#1e40af;text-transform:uppercase;">Bugün Alınan Cihaz</div>
+              <div style="font-size:24px;font-weight:900;color:#1d4ed8;margin-top:4px;">${todayDevices.length}</div>
+            </td>
+            <td width="34%" style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:10px;padding:12px;text-align:center;">
+              <div style="font-size:11px;font-weight:700;color:#334155;text-transform:uppercase;">Üzerinizdeki Toplam Zimmet</div>
+              <div style="font-size:24px;font-weight:900;color:#0f172a;margin-top:4px;">${allActiveOnTech.length}</div>
+            </td>
+            <td width="33%" style="background:${criticalOnTech > 0 ? '#fef2f2' : '#ecfdf5'};border:1px solid ${criticalOnTech > 0 ? '#fecaca' : '#a7f3d0'};border-radius:10px;padding:12px;text-align:center;">
+              <div style="font-size:11px;font-weight:700;color:${criticalOnTech > 0 ? '#991b1b' : '#065f46'};text-transform:uppercase;">SLA Öncelikli (≤10G)</div>
+              <div style="font-size:24px;font-weight:900;color:${criticalOnTech > 0 ? '#dc2626' : '#059669'};margin-top:4px;">${criticalOnTech}</div>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Today's Dispatched Devices Table -->
+        <div style="font-size:13px;font-weight:800;color:#0f172a;margin-bottom:8px;border-left:4px solid #0284c7;padding-left:10px;">
+          ${trDateOnly} Tarihli Teslim Alınan Cihazlar (${todayDevices.length} Adet)
+        </div>
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #cbd5e1;margin-bottom:18px;">
+          <thead>
+            <tr style="background:#0f172a;color:#ffffff;">
+              <th style="padding:8px 10px;text-align:left;font-size:11px;">Seri No</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;">Kategori</th>
+              <th style="padding:8px 10px;text-align:left;font-size:11px;">Model</th>
+              <th style="padding:8px 10px;text-align:left;font-size:11px;">Statü</th>
+              <th style="padding:8px 10px;text-align:left;font-size:11px;">Çıktığı Raf</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;">Kalan SLA</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tableRowsHtml}
+          </tbody>
+        </table>
+
+        <!-- Attachment Info -->
+        <div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:12px 14px;font-size:12px;color:#334155;line-height:1.6;">
+          <strong>Ekteki Excel Dosyası (${filename}):</strong><br/>
+          <strong>1. Sekme (Bugun_Alinan_Cihazlar):</strong> Bugün teslim aldığınız ${todayDevices.length} cihazın seri ve SLA detayları.<br/>
+          <strong>2. Sekme (Uzerimdeki_Tum_Cihazlar):</strong> Üzerinizde aktif zimmetli bulunan toplam ${allActiveOnTech.length} cihaz *(müşteriye kurulup stoktan düşen cihazlar otomatik olarak listeden çıkarılmıştır)*.
+        </div>
+      </div>
+
+      <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:12px 24px;font-size:11px;color:#64748b;text-align:center;">
+        Bu e-posta <strong>KARADENİZ EÇM Depo ve Zimmet Yönetim Sistemi</strong> tarafından otomatik olarak gönderilmiştir.
+      </div>
+    </div>
+  </div>`;
+
+  const textBody = [
+    `Sayın ${person.full_name}, ${trDateOnly} tarihli malzeme alım detaylarınız aşağıda ve ekteki tabloda yer almaktadır.`,
+    ``,
+    `Bugün Teslim Alınan Cihazlar (${todayDevices.length} Adet):`,
+    ...todayDevices.map(d => `- ${d.serial_no} | ${d.category} | ${d.model_name} | ${d.logical_shelf} | Kalan SLA: ${slaLabel(d)}`),
+    ``,
+    `Üzerinizdeki Toplam Aktif Zimmet: ${allActiveOnTech.length} cihaz (Detaylar ekteki 2 sekmeli Excel dosyasındadır).`
+  ].join('\n');
+
+  const ccEmail = getSettingValue('dispatch_report_cc', DEFAULT_DISPATCH_REPORT_CC);
 
   return {
-    ok: res.mail_sent,
-    error: res.error,
-    to: report.toEmail,
-    cc: report.ccEmail,
-    filename: report.filename,
-    totalCritical: report.totalCritical,
-    depodaCount: report.depodaCount,
-    techCount: report.techCount
+    filename,
+    toEmail: person.email || '',
+    ccEmail,
+    subject: `[KARADENİZ EÇM] ${trDateOnly} Tarihli Malzeme Alım ve Zimmet Bildirimi — ${person.full_name} (${todayDevices.length} Cihaz)`,
+    textBody,
+    htmlBody,
+    xlsxBuffer
   };
 }
 
@@ -1133,8 +1352,8 @@ if (db.prepare(`SELECT COUNT(*) as c FROM transfer_pool`).get().c === 0) {
   insTr.run('SPX-SN9003', 'TURKCELL', 'Turkcell SPX Kurumsal Router', 'SAĞLAM', 'TEKNİSYENDEN_DEPOYA', 6, 'Mustafa Demir', null, 'Merkez Depo', 'TURKCELL01', 'Müşteri kurulumu ertelendi, cihaz kullanılmadan sağlam olarak depoya iade', new Date().toISOString());
 }
 runAutomaticBackgroundChecks();
-// Run automatic SLA & escalation checks every 5 minutes in background
-setInterval(runAutomaticBackgroundChecks, 5 * 60 * 1000);
+// Check every 30 seconds so 23:59 Europe/Istanbul scheduled SLA report never misses
+setInterval(runAutomaticBackgroundChecks, 30 * 1000);
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -1623,16 +1842,13 @@ async function handleApi(req, res, urlObj) {
     });
   }
 
-  // POST /api/dispatch/commit -> Morning or Intraday Dispatch Save -> AUTOMATICALLY notifies Technician + Managers & records in dispatch_history!
+  // POST /api/dispatch/commit -> Morning or Intraday Dispatch Save -> Sends Corporate HTML + 2-Sheet Excel to Technician (TO) + Depocu/Teknik Müdür (CC)
   if (pathname === '/api/dispatch/commit' && method === 'POST') {
     const body = await readBody(req);
-    const { assignments = [], dispatch_type = 'SABAH_DAĞITIM', dispatched_by = 'Hasan Çelik' } = body;
+    const { assignments = [], dispatch_type = 'SABAH_DAĞITIM', dispatched_by = 'Hasan İlker Kadıoğlu' } = body;
     if (!assignments.length) return sendJson(res, 400, { error: 'Kaydedilecek cihaz dağıtım listesi boş.' });
 
     const now = new Date().toISOString();
-    const managers = db.prepare(`SELECT * FROM personnel WHERE role = 'YÖNETİCİ' AND active = 1`).all();
-    const managerEmails = managers.map(m => m.email).filter(Boolean).join(', ');
-    const managerPhones = managers.map(m => m.phone).filter(Boolean).join(', ');
 
     const insertHistory = db.prepare(`
       INSERT INTO dispatch_history (serial_no, category, model_name, logical_shelf, from_physical_shelf, personnel_id, personnel_name, team_name, dispatched_by, dispatched_at, dispatch_type, status_after)
@@ -1641,17 +1857,18 @@ async function handleApi(req, res, urlObj) {
 
     const notificationsSent = [];
     let totalDevicesDispatched = 0;
-    const summaryLines = [];
 
     for (const group of assignments) {
       const person = db.prepare(`SELECT * FROM personnel WHERE id = ?`).get(group.personnel_id);
       if (!person || !group.serial_numbers || !group.serial_numbers.length) continue;
 
-      const updatedSerials = [];
+      const updatedDevices = [];
       for (const rawSn of group.serial_numbers) {
         const sn = rawSn.trim().toUpperCase();
         const dev = db.prepare(`SELECT * FROM devices WHERE serial_no = ?`).get(sn);
         if (!dev) continue;
+
+        const fromShelf = dev.physical_shelf_code || '-';
 
         db.prepare(`
           UPDATE devices
@@ -1664,7 +1881,7 @@ async function handleApi(req, res, urlObj) {
           dev.category,
           dev.model_name,
           dev.logical_shelf,
-          dev.physical_shelf_code || '-',
+          fromShelf,
           person.id,
           person.full_name,
           person.team_name,
@@ -1673,40 +1890,37 @@ async function handleApi(req, res, urlObj) {
           dispatch_type
         );
 
-        updatedSerials.push(sn);
+        updatedDevices.push({ ...dev, from_physical_shelf: fromShelf, assigned_at: now });
         totalDevicesDispatched++;
       }
 
-      if (updatedSerials.length > 0) {
-        const dtStr = new Date().toLocaleString('tr-TR');
-        const techMsg = `[KARADENİZ EÇM DEPO ZİMMET BİLDİRİMİ] Sayın ${person.full_name} (${person.team_name}), ${dtStr} tarihinde tarafınıza ${updatedSerials.length} adet cihaz zimmetlenmiştir. Teslim alınan seri numaraları: ${updatedSerials.join(', ')}.`;
+      if (updatedDevices.length > 0) {
+        const dtStr = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+        const emailPkg = buildTechnicianDispatchEmail(person, updatedDevices, dispatched_by);
 
-        // 1. Automatic notification to the Technician
         dispatchAutoNotification({
-          recipient_name: `${person.full_name} (${person.team_name})`,
+          recipient_name: `${person.full_name} (TO) | Hasan İlker Kadıoğlu, Servetcan Küçüksolak (CC)`,
           recipient_phone: person.phone,
-          recipient_email: person.email,
+          recipient_email: emailPkg.toEmail,
+          recipient_cc: emailPkg.ccEmail,
           category: 'OTOMATİK_ZİMMET_BİLDİRİMİ',
-          title: `Cihaz Zimmet Teslimatı (${dtStr}) - ${updatedSerials.length} Adet Cihaz`,
-          message: techMsg
+          title: emailPkg.subject,
+          message: emailPkg.textBody,
+          htmlBody: emailPkg.htmlBody,
+          attachment: {
+            filename: emailPkg.filename,
+            mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            base64: emailPkg.xlsxBuffer.toString('base64')
+          }
         });
 
-        summaryLines.push(`${person.full_name} (${person.team_name}): ${updatedSerials.length} adet [${updatedSerials.join(', ')}]`);
-        notificationsSent.push({ person: person.full_name, count: updatedSerials.length, serials: updatedSerials, timestamp: dtStr });
+        notificationsSent.push({
+          person: person.full_name,
+          count: updatedDevices.length,
+          serials: updatedDevices.map(d => d.serial_no),
+          timestamp: dtStr
+        });
       }
-    }
-
-    // 2. Automatic summary notification to Managers
-    if (summaryLines.length > 0) {
-      const dtStr = new Date().toLocaleString('tr-TR');
-      dispatchAutoNotification({
-        recipient_name: 'Karadeniz EÇM Operasyon Yönetimi',
-        recipient_phone: managerPhones,
-        recipient_email: managerEmails,
-        category: 'OTOMATİK_YÖNETİCİ_ÖZETİ',
-        title: `Teknisyen Cihaz Çıkışı (${dtStr} - Toplam ${totalDevicesDispatched} Cihaz)`,
-        message: `[KARADENİZ EÇM DEPO RAPORU] ${dtStr} itibarıyla depodan teknisyenlere yapılan cihaz çıkış özeti:\n` + summaryLines.join(' | ')
-      });
     }
 
     return sendJson(res, 200, { ok: true, notificationsSent, totalDevicesDispatched });
