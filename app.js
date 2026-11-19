@@ -936,8 +936,11 @@ function renderShelvesSummary() {
   }).join('');
 }
 
+let MODAL_SHELF_RENDER_LIMIT = 200;
+
 function openShelfDetailModal(shelfCode) {
   ACTIVE_MODAL_SHELF_CODE = shelfCode;
+  MODAL_SHELF_RENDER_LIMIT = 200;
   const shelf = APP_STATE.shelves.find(s => s.code === shelfCode);
   if (!shelf) return;
 
@@ -953,6 +956,11 @@ function openShelfDetailModal(shelfCode) {
   const modal = document.getElementById('shelf-detail-modal');
   modal.classList.remove('hidden');
   modal.classList.add('flex');
+}
+
+function loadMoreShelfModalRows() {
+  MODAL_SHELF_RENDER_LIMIT += 250;
+  renderShelfDetailModalTable(true);
 }
 
 function closeShelfDetailModal() {
@@ -974,8 +982,9 @@ function getShelfDevices(shelfCode, searchQuery = '') {
   });
 }
 
-function renderShelfDetailModalTable() {
+function renderShelfDetailModalTable(keepLimit = false) {
   if (!ACTIVE_MODAL_SHELF_CODE) return;
+  if (!keepLimit) MODAL_SHELF_RENDER_LIMIT = 200;
   const q = document.getElementById('modal-shelf-search')?.value || '';
   const list = getShelfDevices(ACTIVE_MODAL_SHELF_CODE, q);
   const tbody = document.getElementById('modal-shelf-tbody');
@@ -985,7 +994,8 @@ function renderShelfDetailModalTable() {
     return;
   }
 
-  tbody.innerHTML = list.map(d => `
+  const visible = list.slice(0, MODAL_SHELF_RENDER_LIMIT);
+  let html = visible.map(d => `
     <tr class="hover:bg-slate-500/[0.04]">
       <td class="py-2.5 px-3 font-mono font-bold text-main">${d.serial_no}</td>
       <td class="py-2.5 px-3"><span class="px-2 py-0.5 rounded text-[10px] ${d.category === 'SOL' ? 'badge-sol' : 'badge-turkcell'}">${d.category}</span></td>
@@ -1001,6 +1011,21 @@ function renderShelfDetailModalTable() {
       <td class="py-2.5 px-3 text-mute">${d.notes || '-'}</td>
     </tr>
   `).join('');
+
+  if (list.length > MODAL_SHELF_RENDER_LIMIT) {
+    const remaining = list.length - MODAL_SHELF_RENDER_LIMIT;
+    html += `
+      <tr>
+        <td colspan="8" class="py-3 text-center">
+          <button onclick="loadMoreShelfModalRows()" class="px-4 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs transition">
+            Daha Fazla Göster (${remaining} cihaz daha var — Excel İndir tüm ${list.length} cihazı aktarır)
+          </button>
+        </td>
+      </tr>
+    `;
+  }
+
+  tbody.innerHTML = html;
 }
 
 function exportSingleShelfToExcel(shelfCode) {
@@ -1062,13 +1087,67 @@ function getFilteredInventoryDevices() {
   });
 }
 
+let INVENTORY_RENDER_LIMIT = 150;
+let PENDING_TURKCELL_SYNC_ROWS = null;
+
+// Parse Excel serial date-time (e.g. 46318.6783680556) or string date-time into { isoDate, displayDateTime }
+function parseExcelDateValue(rawVal) {
+  if (rawVal === null || rawVal === undefined || rawVal === '') {
+    const today = new Date().toISOString().split('T')[0];
+    return { isoDate: today, displayDateTime: today };
+  }
+  if (typeof rawVal === 'number' && rawVal > 20000) {
+    // Excel epoch (1899-12-30 UTC)
+    const utcMs = Math.round((rawVal - 25569) * 86400 * 1000);
+    const dt = new Date(utcMs);
+    const yyyy = dt.getUTCFullYear();
+    const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getUTCDate()).padStart(2, '0');
+    const hh = String(dt.getUTCHours()).padStart(2, '0');
+    const mi = String(dt.getUTCMinutes()).padStart(2, '0');
+    return { isoDate: `${yyyy}-${mm}-${dd}`, displayDateTime: `${dd}.${mm}.${yyyy} ${hh}:${mi}` };
+  }
+  const str = String(rawVal).trim();
+  // DD.MM.YYYY [HH:mm:ss]
+  const trMatch = str.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}:\d{2}))?/);
+  if (trMatch) {
+    const dd = trMatch[1].padStart(2, '0');
+    const mm = trMatch[2].padStart(2, '0');
+    const yyyy = trMatch[3];
+    const timePart = trMatch[4] ? ` ${trMatch[4]}` : '';
+    return { isoDate: `${yyyy}-${mm}-${dd}`, displayDateTime: `${dd}.${mm}.${yyyy}${timePart}` };
+  }
+  // YYYY-MM-DD [HH:mm:ss]
+  const isoMatch = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s]+(\d{1,2}:\d{2}))?/);
+  if (isoMatch) {
+    const yyyy = isoMatch[1];
+    const mm = isoMatch[2].padStart(2, '0');
+    const dd = isoMatch[3].padStart(2, '0');
+    const timePart = isoMatch[4] ? ` ${isoMatch[4]}` : '';
+    return { isoDate: `${yyyy}-${mm}-${dd}`, displayDateTime: `${dd}.${mm}.${yyyy}${timePart}` };
+  }
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime())) {
+    const isoDate = parsed.toISOString().split('T')[0];
+    return { isoDate, displayDateTime: parsed.toLocaleString('tr-TR') };
+  }
+  const fallback = new Date().toISOString().split('T')[0];
+  return { isoDate: fallback, displayDateTime: str };
+}
+
+function loadMoreInventoryRows() {
+  INVENTORY_RENDER_LIMIT += 200;
+  renderDevicesTable();
+}
+
 function renderDevicesTable() {
   const filtered = getFilteredInventoryDevices();
   const countBadge = document.getElementById('filtered-inv-count');
   if (countBadge) countBadge.textContent = filtered.length;
 
+  const visibleRows = filtered.slice(0, INVENTORY_RENDER_LIMIT);
   const tbody = document.getElementById('devices-tbody');
-  tbody.innerHTML = filtered.map(d => {
+  let html = visibleRows.map(d => {
     let locBadge = '';
     if (d.location_status === 'DEPODA') {
       locBadge = `<button onclick="openShelfDetailModal('${d.physical_shelf_code}')" class="px-2 py-0.5 rounded bg-sky-500/15 hover:bg-sky-500/25 text-sky-500 font-mono font-semibold transition">${d.physical_shelf_code || '-'}</button>`;
@@ -1088,18 +1167,32 @@ function renderDevicesTable() {
     }
 
     return `
-      <tr class="hover:bg-slate-500/[0.04]">
-        <td class="py-2.5 px-3 font-mono font-semibold text-main">${d.serial_no}</td>
-        <td class="py-2.5 px-3"><span class="px-2 py-0.5 rounded text-[10px] ${d.category === 'SOL' ? 'badge-sol' : 'badge-turkcell'}">${d.category}</span></td>
-        <td class="py-2.5 px-3 text-sub">${d.model_name}</td>
-        <td class="py-2.5 px-3 text-sub font-medium">${d.logical_shelf}</td>
-        <td class="py-2.5 px-3">${locBadge}</td>
-        <td class="py-2.5 px-3 text-mute font-mono text-[11px]">${d.sla_entry_date}</td>
-        <td class="py-2.5 px-3">${slaBadge}</td>
-        <td class="py-2.5 px-3 text-mute">${d.notes || '-'}</td>
+      <tr>
+        <td class="font-mono font-semibold text-main">${d.serial_no}</td>
+        <td><span class="px-2 py-0.5 rounded text-[10px] ${d.category === 'SOL' ? 'badge-sol' : 'badge-turkcell'}">${d.category}</span></td>
+        <td class="text-sub">${d.model_name}</td>
+        <td class="text-sub font-medium">${d.logical_shelf}</td>
+        <td>${locBadge}</td>
+        <td class="text-mute font-mono text-[11px]">${d.sla_entry_date}</td>
+        <td>${slaBadge}</td>
+        <td class="text-mute">${d.notes || '-'}</td>
       </tr>
     `;
   }).join('');
+
+  if (filtered.length > visibleRows.length) {
+    html += `
+      <tr>
+        <td colspan="8" class="text-center py-3">
+          <button onclick="loadMoreInventoryRows()" class="px-4 py-1.5 rounded-lg subcard hover:border-sky-500/50 text-sky-500 font-semibold text-xs transition">
+            Daha Fazla Göster (${visibleRows.length} / ${filtered.length} Cihaz Görüntüleniyor)
+          </button>
+        </td>
+      </tr>
+    `;
+  }
+
+  tbody.innerHTML = html;
 }
 
 function exportFilteredInventoryToExcel() {
@@ -1111,7 +1204,7 @@ function exportFilteredInventoryToExcel() {
   );
 }
 
-// ==================== TAB 2: TURKCELL REPORT SYNC ====================
+// ==================== TAB 2: TURKCELL REPORT SYNC (Depo Sol.xlsx & Depo Tsd.xlsx EXACT HEADERS) ====================
 function handleTurkcellExcelUpload(event) {
   const file = event.target.files[0];
   if (!file) return;
@@ -1122,39 +1215,108 @@ function handleTurkcellExcelUpload(event) {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
 
-    const lines = jsonRows.map(r => {
-      const sn = r['Seri No'] || r['SeriNo'] || r['SERI_NO'] || r['serial_no'] || Object.values(r)[0] || '';
-      const model = r['Model'] || r['Malzeme Adı'] || r['model_name'] || Object.values(r)[1] || 'SOL Cihaz';
-      const shelf = r['Raf'] || r['Statü'] || r['logical_shelf'] || Object.values(r)[2] || 'SAĞLAM';
-      const date = r['Tarih'] || r['Giriş Tarihi'] || r['sla_entry_date'] || Object.values(r)[3] || new Date().toISOString().split('T')[0];
-      return `${sn}\t${model}\t${shelf}\t${date}`;
-    }).filter(Boolean);
+    let detectedCategory = null;
+    const parsedRows = [];
+    const statusCounts = { SAĞLAM: 0, 'SAĞLAM DÖNEN': 0, KARANTİNA: 0, ARIZA: 0 };
 
-    document.getElementById('sync-paste-area').value = lines.join('\n');
-    showToast(`${lines.length} satır rapordan okundu.`, 'info');
+    for (const r of jsonRows) {
+      const sn = String(r['Seri No'] || r['SeriNo'] || r['SERI_NO'] || r['serial_no'] || '').trim();
+      if (!sn) continue;
+
+      if (!detectedCategory && r['Sirket']) {
+        const comp = String(r['Sirket']).trim().toUpperCase();
+        if (comp.includes('TSATIS') || comp.includes('TURKCELL')) detectedCategory = 'TURKCELL';
+        else if (comp.includes('SUPERONLINE') || comp.includes('SOL')) detectedCategory = 'SOL';
+      }
+
+      const kalemTanimi = String(r['Kalem Tanimi'] || r['Model'] || r['Malzeme Adı'] || r['model_name'] || '').trim();
+      const kalemKod = String(r['Kalem Kod'] || '').trim();
+      const modelName = kalemTanimi || kalemKod || 'Cihaz';
+
+      const rawShelf = String(r['Adres Statusu'] || r['Raf'] || r['Statü'] || r['logical_shelf'] || 'SAGLAM').trim().toUpperCase();
+      let normShelf = 'SAĞLAM';
+      if (rawShelf.includes('ARIZA')) normShelf = 'ARIZA';
+      else if (rawShelf.includes('KARANT')) normShelf = 'KARANTİNA';
+      else if (rawShelf.includes('DONEN') || rawShelf.includes('DÖNEN')) normShelf = 'SAĞLAM DÖNEN';
+      statusCounts[normShelf] = (statusCounts[normShelf] || 0) + 1;
+
+      const rawDate = r['Son Islem Tarihi'] !== undefined && r['Son Islem Tarihi'] !== ''
+        ? r['Son Islem Tarihi']
+        : (r['Tarih'] || r['Giriş Tarihi'] || r['sla_entry_date'] || '');
+      const { isoDate, displayDateTime } = parseExcelDateValue(rawDate);
+
+      parsedRows.push({
+        serial_no: sn,
+        model_name: modelName,
+        logical_shelf: normShelf,
+        sla_entry_date: isoDate,
+        last_action_time: displayDateTime
+      });
+    }
+
+    if (detectedCategory) {
+      const catSel = document.getElementById('sync-category');
+      if (catSel) catSel.value = detectedCategory;
+    }
+
+    PENDING_TURKCELL_SYNC_ROWS = parsedRows;
+
+    // Show clean preview in textarea (first 15 rows + summary so 4444 rows don't lag the browser!)
+    const previewLines = parsedRows.slice(0, 15).map(r => `${r.serial_no}\t${r.model_name}\t${r.logical_shelf}\t${r.last_action_time}`);
+    if (parsedRows.length > 15) {
+      previewLines.push(`... ve toplam ${parsedRows.length - 15} cihaz daha (Bellekte hazır)`);
+    }
+    document.getElementById('sync-paste-area').value = previewLines.join('\n');
+
+    const box = document.getElementById('sync-results-box');
+    if (box) {
+      box.innerHTML = `
+        <div class="p-3 rounded-lg bg-sky-500/15 border border-sky-500/30 text-main space-y-1.5">
+          <div class="font-bold text-sky-500">Dosya Okundu: ${file.name} (${parsedRows.length} Cihaz — ${detectedCategory || document.getElementById('sync-category').value})</div>
+          <div class="text-sub text-[11px]">
+            Sağlam: <strong>${statusCounts['SAĞLAM']}</strong> •
+            Sağlam Dönen: <strong>${statusCounts['SAĞLAM DÖNEN']}</strong> •
+            Karantina: <strong>${statusCounts['KARANTİNA']}</strong> •
+            Arızalı: <strong>${statusCounts['ARIZA']}</strong>
+          </div>
+          <div class="text-mute text-[11px]">Sol taraftaki "Raporu İçeri Aktar ve Eşleştir" butonuna basarak işlemi tamamlayabilirsiniz.</div>
+        </div>
+      `;
+    }
+    showToast(`${file.name} okundu: ${parsedRows.length} cihaz eşleştirmeye hazır.`, 'info');
   };
   reader.readAsArrayBuffer(file);
 }
 
 async function runTurkcellSyncFromTextarea() {
-  const raw = document.getElementById('sync-paste-area').value.trim();
   const category = document.getElementById('sync-category').value;
-  if (!raw) return showToast('Lütfen Excel seçin veya rapor satırlarını yapıştırın.', 'warning');
+  let rows = [];
 
-  const rows = raw.split('\n').map(line => {
-    const parts = line.split(/\t|,|;/).map(s => s.trim());
-    return {
-      serial_no: parts[0],
-      model_name: parts[1] || `${category} Cihaz`,
-      logical_shelf: parts[2] || 'SAĞLAM',
-      sla_entry_date: parts[3] || new Date().toISOString().split('T')[0]
-    };
-  }).filter(r => r.serial_no);
+  if (PENDING_TURKCELL_SYNC_ROWS && PENDING_TURKCELL_SYNC_ROWS.length > 0) {
+    rows = PENDING_TURKCELL_SYNC_ROWS;
+  } else {
+    const raw = document.getElementById('sync-paste-area').value.trim();
+    if (!raw) return showToast('Lütfen Excel seçin veya rapor satırlarını yapıştırın.', 'warning');
+
+    rows = raw.split('\n').map(line => {
+      const parts = line.split(/\t|,|;/).map(s => s.trim());
+      const { isoDate, displayDateTime } = parseExcelDateValue(parts[3] || '');
+      return {
+        serial_no: parts[0],
+        model_name: parts[1] || `${category} Cihaz`,
+        logical_shelf: parts[2] || 'SAĞLAM',
+        sla_entry_date: isoDate,
+        last_action_time: displayDateTime
+      };
+    }).filter(r => r.serial_no);
+  }
 
   try {
+    showToast(`${rows.length} cihaz eşleştiriliyor, lütfen bekleyin...`, 'info');
     const res = await apiPost('/api/reports/sync-turkcell', { category, rows });
+    PENDING_TURKCELL_SYNC_ROWS = null;
     renderSyncResult(res);
-    showToast('Rapor eşleştirmesi tamamlandı.', 'success');
+    showToast(`${res.total_in_report} cihaz başarıyla eşleştirildi.`, 'success');
     await loadDashboardData();
   } catch (err) {
     showToast(err.message, 'error');
@@ -2632,27 +2794,141 @@ async function addSinglePersonnel() {
   }
 }
 
+function normalizeBysHeader(h) {
+  return String(h || '')
+    .trim()
+    .toUpperCase()
+    .replace(/İ/g, 'I')
+    .replace(/Ş/g, 'S')
+    .replace(/Ğ/g, 'G')
+    .replace(/Ü/g, 'U')
+    .replace(/Ö/g, 'O')
+    .replace(/Ç/g, 'C')
+    .replace(/\s+/g, ' ');
+}
+
+function mapBysGorevToSystemRole(rawGorev) {
+  const g = normalizeBysHeader(rawGorev);
+  if (!g) return null;
+  // Direct system role names (for manual/simple Excel uploads)
+  if (g === 'YONETICI') return 'YÖNETİCİ';
+  if (g === 'DEPOCU') return 'DEPOCU';
+  if (g === 'TEKNISYEN') return 'TEKNİSYEN';
+  if (g === 'KARSILAMA') return 'KARŞILAMA';
+
+  // Exact Bys Rapor.xlsx operational role mapping
+  if (g.includes('STOK YONETIM') || g.includes('DEPO')) return 'DEPOCU';
+  if (g.includes('GENEL KOORDINATOR') || g.includes('MUDUR')) return 'YÖNETİCİ';
+  if (g.includes('TEKNIK')) return 'TEKNİSYEN';
+  if (g.includes('HIZMET DANISMAN') || g.includes('SATIS DESTEK')) return 'KARŞILAMA';
+
+  // Non-operational roles (Satis / Yeni Musteri, Protokol, Idari Isler, etc.) are excluded
+  return null;
+}
+
 function handleBysExcelUpload(event) {
   if (CURRENT_USER?.role !== 'YÖNETİCİ') return showToast('Sadece Yönetici işlem yapabilir.', 'warning');
   const file = event.target.files[0];
   if (!file) return;
   const reader = new FileReader();
   reader.onload = async (e) => {
-    const data = new Uint8Array(e.target.result);
-    const workbook = XLSX.read(data, { type: 'array' });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-    const rows = json.map(r => ({
-      employee_code: r['Sicil'] || r['BYS No'] || r['employee_code'] || Object.values(r)[0],
-      full_name: r['Ad Soyad'] || r['Personel'] || r['full_name'] || Object.values(r)[1],
-      team_name: r['Ekip'] || r['Birim'] || r['team_name'] || Object.values(r)[2] || 'Saha Ekibi',
-      phone: String(r['Telefon'] || r['Cep'] || r['phone'] || Object.values(r)[3] || ''),
-      email: r['Mail'] || r['E-Posta'] || r['email'] || Object.values(r)[4] || '',
-      role: r['Rol'] || r['Görev'] || 'TEKNİSYEN'
-    }));
-    await apiPost('/api/personnel/import', { user_role: CURRENT_USER.role, rows });
-    showToast(`${rows.length} personel güncellendi.`, 'success');
-    await loadDashboardData();
+    try {
+      const data = new Uint8Array(e.target.result);
+      const workbook = XLSX.read(data, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      // Read as 2D array so Row 1 merged title ("PERSONEL RAPORU") does not break Row 2 headers
+      const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+      let headerRowIdx = matrix.findIndex(row =>
+        Array.isArray(row) && row.some(cell => {
+          const n = normalizeBysHeader(cell);
+          return n === 'SICIL NO' || n === 'AD SOYAD' || n === 'KULLANICI ADI';
+        })
+      );
+      if (headerRowIdx === -1) headerRowIdx = 0;
+
+      const headers = (matrix[headerRowIdx] || []).map(normalizeBysHeader);
+      const findCol = (...names) => headers.findIndex(h => names.includes(h));
+
+      const idxSicil = findCol('SICIL NO', 'SICIL', 'BYS NO', 'EMPLOYEE_CODE');
+      const idxUname = findCol('KULLANICI ADI', 'USERNAME');
+      const idxName = findCol('AD SOYAD', 'PERSONEL', 'FULL_NAME');
+      const idxGorev = findCol('GOREVI', 'GOREV', 'ROL', 'ROLE');
+      const idxEmail = findCol('SIRKET E-MAIL', 'E-MAIL', 'MAIL', 'E-POSTA', 'EMAIL');
+      const idxPhone1 = findCol('CEP TELEFONU', 'TELEFON', 'CEP', 'PHONE');
+      const idxPhone2 = findCol('KISISEL CEP TELEFONU');
+      const idxStatus = findCol('DURUMU', 'DURUM', 'STATUS');
+      const idxSolAile = findCol('SOL IS AILESI', 'EKIP', 'BIRIM', 'TEAM_NAME');
+
+      const rows = [];
+      const roleCounts = { 'TEKNİSYEN': 0, 'KARŞILAMA': 0, 'DEPOCU': 0, 'YÖNETİCİ': 0 };
+      let skippedInactive = 0;
+      let skippedOtherRole = 0;
+
+      for (let i = headerRowIdx + 1; i < matrix.length; i++) {
+        const r = matrix[i];
+        if (!Array.isArray(r)) continue;
+        const fullName = String(idxName >= 0 ? r[idxName] : '').trim();
+        if (!fullName) continue;
+
+        // 1. Strict Active check (if DURUMU column exists)
+        if (idxStatus >= 0) {
+          const statusVal = normalizeBysHeader(r[idxStatus]);
+          if (statusVal !== 'AKTIF') {
+            skippedInactive++;
+            continue;
+          }
+        }
+
+        // 2. Strict Operational Role check
+        const rawGorev = String(idxGorev >= 0 ? r[idxGorev] : '').trim();
+        const mappedRole = mapBysGorevToSystemRole(rawGorev);
+        if (!mappedRole) {
+          skippedOtherRole++;
+          continue;
+        }
+
+        const empCode = String(idxSicil >= 0 ? r[idxSicil] : '').trim();
+        const uname = String(idxUname >= 0 ? r[idxUname] : '').trim() || empCode;
+        const phonePrimary = String(idxPhone1 >= 0 ? r[idxPhone1] : '').trim();
+        const phoneFallback = String(idxPhone2 >= 0 ? r[idxPhone2] : '').trim();
+        const phone = phonePrimary || phoneFallback;
+        const email = String(idxEmail >= 0 ? r[idxEmail] : '').trim();
+        const solAile = String(idxSolAile >= 0 ? r[idxSolAile] : '').trim();
+
+        rows.push({
+          employee_code: empCode || `BYS-${i}`,
+          username: uname,
+          full_name: fullName,
+          team_name: rawGorev || solAile || 'Saha Ekibi',
+          phone,
+          email,
+          role: mappedRole
+        });
+        roleCounts[mappedRole] = (roleCounts[mappedRole] || 0) + 1;
+      }
+
+      if (!rows.length) {
+        showToast('Excel dosyasında sisteme uygun aktif operasyon personeli bulunamadı.', 'error');
+        return;
+      }
+
+      await apiPost('/api/personnel/import', {
+        user_role: CURRENT_USER.role,
+        rows,
+        deactivate_missing: true
+      });
+
+      showToast(
+        `${rows.length} aktif operasyon personeli aktarıldı (${roleCounts['TEKNİSYEN']} Teknisyen, ${roleCounts['KARŞILAMA']} Karşılama, ${roleCounts['DEPOCU']} Depocu, ${roleCounts['YÖNETİCİ']} Yönetici). ${skippedInactive} deaktif ve ${skippedOtherRole} diğer birim personeli hariç tutuldu.`,
+        'success'
+      );
+      await loadDashboardData();
+    } catch (err) {
+      showToast(`BYS Excel okuma/aktarım hatası: ${err.message}`, 'error');
+    } finally {
+      event.target.value = '';
+    }
   };
   reader.readAsArrayBuffer(file);
 }
