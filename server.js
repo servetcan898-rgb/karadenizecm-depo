@@ -205,17 +205,44 @@ function recommendPhysicalShelf(category, logicalShelf) {
       (SELECT COUNT(*) FROM devices d WHERE d.physical_shelf_code = s.code AND d.location_status = 'DEPODA') as current_count
     FROM physical_shelves s
     WHERE s.category = ? AND s.target_logical_shelf = ?
-    ORDER BY current_count ASC
+    ORDER BY (s.capacity - (SELECT COUNT(*) FROM devices d WHERE d.physical_shelf_code = s.code AND d.location_status = 'DEPODA')) DESC, s.code ASC
   `).all(category, logicalShelf);
 
-  if (shelves.length > 0) {
-    for (const sh of shelves) {
-      if (sh.current_count < sh.capacity) return sh.code;
-    }
-    return shelves[0].code;
+  for (const sh of shelves) {
+    if (sh.current_count < (sh.capacity || 500)) return sh.code;
   }
-  const fallback = db.prepare(`SELECT code FROM physical_shelves WHERE category = ? ORDER BY code ASC LIMIT 1`).get(category);
-  return fallback ? fallback.code : (category === 'SOL' ? 'SOL01' : 'TURKCELL01');
+  // All matching shelves are full (or none exist) -> return null instead of overflowing a full shelf!
+  return null;
+}
+
+function checkShelfCapacity(shelfCode, incomingCount = 1) {
+  const code = String(shelfCode || '').trim().toUpperCase();
+  if (!code || code === 'RAF_BEKLİYOR') {
+    return { ok: false, error: 'Lütfen geçerli bir fiziksel raf seçiniz.' };
+  }
+  const shelf = db.prepare(`
+    SELECT s.*,
+      (SELECT COUNT(*) FROM devices d WHERE d.physical_shelf_code = s.code AND d.location_status = 'DEPODA') as current_count
+    FROM physical_shelves s
+    WHERE s.code = ?
+  `).get(code);
+  if (!shelf) {
+    return { ok: false, error: `'${code}' fiziksel rafı bulunamadı.` };
+  }
+  const cap = Number(shelf.capacity) || 500;
+  const cur = Number(shelf.current_count) || 0;
+  const free = Math.max(0, cap - cur);
+  if (cur + incomingCount > cap) {
+    return {
+      ok: false,
+      shelf,
+      current: cur,
+      capacity: cap,
+      free,
+      error: `KAPASİTE DOLU: '${code}' rafında şu an ${cur}/${cap} cihaz var (Boş yer: ${free}). ${incomingCount} adet cihaz sığmıyor! Lütfen boş kapasiteli başka bir raf seçin veya 7. sekmeden kapasiteyi artırıp yeni raf açın.`
+    };
+  }
+  return { ok: true, shelf, current: cur, capacity: cap, free };
 }
 
 // ==================== ZERO-DEPENDENCY REAL MULTI-SHEET .XLSX GENERATOR ====================
@@ -2429,7 +2456,8 @@ async function handleApi(req, res, urlObj) {
     '/api/transfers/approve', '/api/transfers/reject', '/api/returns/approve',
     '/api/counts/shelf', '/api/counts/vehicle-campaign/start', '/api/counts/vehicle-campaign/stop',
     '/api/counts/vehicle-campaign/send-final', '/api/shipments/import', '/api/shipments/scan',
-    '/api/shipments/approve', '/api/shelves/resolve-mismatch', '/api/reports/sla-dashboard-xlsx'
+    '/api/shipments/approve', '/api/shelves/resolve-mismatch', '/api/shelves/assign-pending',
+    '/api/reports/sla-dashboard-xlsx'
   ];
   if (depoOrAdminPaths.includes(pathname) && authUser.role !== 'YÖNETİCİ' && authUser.role !== 'DEPOCU') {
     return sendJson(res, 403, { error: 'Yetki Hatası: Bu işlem yalnızca YÖNETİCİ veya DEPOCU tarafından yapılabilir.' });
@@ -2579,12 +2607,15 @@ async function handleApi(req, res, urlObj) {
     const notifications = db.prepare(`SELECT * FROM notifications_log ORDER BY id DESC LIMIT 100`).all();
     const countLogs = db.prepare(`SELECT * FROM count_logs ORDER BY id DESC LIMIT 50`).all();
 
+    const pendingPlacementDevices = allDevices.filter(d => d.location_status === 'DEPODA' && (!d.physical_shelf_code || d.physical_shelf_code === 'RAF_BEKLİYOR'));
+
     return sendJson(res, 200, {
       role: currentUser ? currentUser.role : 'YÖNETİCİ',
       currentUser,
       devices: allDevices,
       slaAlerts,
       shelfMismatches,
+      pendingPlacementDevices,
       fifoRecommendations,
       shelves,
       personnel,
@@ -2606,6 +2637,9 @@ async function handleApi(req, res, urlObj) {
     if (!device) return sendJson(res, 404, { error: 'Cihaz bulunamadı' });
 
     const targetShelf = new_physical_shelf || device.recommended_new_physical_shelf || recommendPhysicalShelf(device.category, device.logical_shelf);
+    const capCheck = checkShelfCapacity(targetShelf, 1);
+    if (!capCheck.ok) return sendJson(res, 400, { error: capCheck.error });
+
     db.prepare(`
       UPDATE devices
       SET physical_shelf_code = ?, shelf_mismatch_alert = 0, previous_logical_shelf = logical_shelf, recommended_new_physical_shelf = NULL,
@@ -2614,6 +2648,72 @@ async function handleApi(req, res, urlObj) {
     `).run(targetShelf, targetShelf, serial_no);
 
     return sendJson(res, 200, { ok: true, serial_no, new_physical_shelf: targetShelf });
+  }
+
+  // POST /api/shelves/assign-pending -> Depocu/Yönetici approves & places RAF_BEKLİYOR devices into a physical shelf with free capacity
+  if (pathname === '/api/shelves/assign-pending' && method === 'POST') {
+    const body = await readBody(req);
+    const { target_shelf_code, serial_numbers = null, category = null, logical_shelf = null, limit = null } = body;
+    const shelfCode = String(target_shelf_code || '').trim().toUpperCase();
+    if (!shelfCode) return sendJson(res, 400, { error: 'Hedef fiziksel raf seçiniz.' });
+
+    let candidates = [];
+    if (Array.isArray(serial_numbers) && serial_numbers.length > 0) {
+      const placeholders = serial_numbers.map(() => '?').join(',');
+      candidates = db.prepare(`
+        SELECT serial_no FROM devices
+        WHERE serial_no IN (${placeholders}) AND location_status = 'DEPODA'
+      `).all(...serial_numbers.map(s => String(s).trim().toUpperCase()));
+    } else if (category && logical_shelf) {
+      candidates = db.prepare(`
+        SELECT serial_no FROM devices
+        WHERE category = ? AND logical_shelf = ? AND location_status = 'DEPODA'
+          AND (physical_shelf_code IS NULL OR physical_shelf_code = '' OR physical_shelf_code = 'RAF_BEKLİYOR')
+        ORDER BY sla_entry_date ASC
+      `).all(category, logical_shelf);
+    } else {
+      return sendJson(res, 400, { error: 'Yerleştirilecek cihaz grubu veya seri listesi belirtilmedi.' });
+    }
+
+    if (!candidates.length) {
+      return sendJson(res, 400, { error: 'Raf onayı bekleyen uygun cihaz bulunamadı.' });
+    }
+
+    const shelfInfo = checkShelfCapacity(shelfCode, 1);
+    if (!shelfInfo.ok) {
+      return sendJson(res, 400, { error: shelfInfo.error });
+    }
+
+    const requestedCount = limit ? Math.min(Number(limit), candidates.length) : candidates.length;
+    if (requestedCount > shelfInfo.free) {
+      return sendJson(res, 400, {
+        error: `KAPASİTE YETERSİZ: '${shelfCode}' rafında ${shelfInfo.free} adet boş yer var (${shelfInfo.current}/${shelfInfo.capacity}), ancak ${requestedCount} cihaz yerleştirmeye çalışıyorsunuz. En fazla ${shelfInfo.free} adet yerleştirebilir veya başka bir müsait raf seçebilirsiniz.`
+      });
+    }
+
+    const toAssign = candidates.slice(0, requestedCount);
+    db.exec('BEGIN TRANSACTION');
+    try {
+      const upd = db.prepare(`
+        UPDATE devices
+        SET physical_shelf_code = ?, recommended_new_physical_shelf = NULL
+        WHERE serial_no = ?
+      `);
+      for (const row of toAssign) {
+        upd.run(shelfCode, row.serial_no);
+      }
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+
+    return sendJson(res, 200, {
+      ok: true,
+      assigned_count: toAssign.length,
+      remaining_in_group: candidates.length - toAssign.length,
+      shelf: shelfCode
+    });
   }
 
   // POST /api/shelves/create (ONLY YÖNETİCİ ALLOWED!)
@@ -2686,6 +2786,10 @@ async function handleApi(req, res, urlObj) {
     if (!targetShelf) return sendJson(res, 404, { error: 'Hedef fiziksel raf bulunamadı.' });
 
     const devicesToMove = db.prepare(`SELECT * FROM devices WHERE physical_shelf_code = ? AND location_status = 'DEPODA'`).all(fromCode);
+    const capCheck = checkShelfCapacity(toCode, devicesToMove.length);
+    if (!capCheck.ok) {
+      return sendJson(res, 400, { error: capCheck.error });
+    }
     db.prepare(`
       UPDATE devices
       SET physical_shelf_code = ?, notes = COALESCE(notes, '') || ' [' || ? || ' -> ' || ? || ' rafına taşındı]'
@@ -2806,7 +2910,12 @@ async function handleApi(req, res, urlObj) {
       });
     }
 
-    const shelfCode = physical_shelf_code || batch.recommended_shelf;
+    const shelfCode = physical_shelf_code || batch.recommended_shelf || recommendPhysicalShelf(batch.category, 'SAĞLAM');
+    const scannedItems = items.filter(i => i.physically_scanned === 1 && i.in_turkcell_pool === 1);
+    const capCheck = checkShelfCapacity(shelfCode, scannedItems.length || 1);
+    if (!capCheck.ok) {
+      return sendJson(res, 400, { error: capCheck.error });
+    }
     const today = new Date().toISOString().split('T')[0];
 
     const upsertDevice = db.prepare(`
@@ -2818,7 +2927,6 @@ async function handleApi(req, res, urlObj) {
         logical_shelf = 'SAĞLAM'
     `);
 
-    const scannedItems = items.filter(i => i.physically_scanned === 1 && i.in_turkcell_pool === 1);
     for (const item of scannedItems) {
       upsertDevice.run(item.serial_no, batch.category, item.model_name, shelfCode, today, `Sevkiyat (${batch.batch_code}) doğrulaması ile ${shelfCode} rafına alındı.`);
     }
@@ -3184,6 +3292,10 @@ async function handleApi(req, res, urlObj) {
       } else {
         // TEKNİSYENDEN_DEPOYA (Unused intact device returned to warehouse physical shelf)
         const targetShelf = physical_shelf_override || tr.recommended_physical_shelf || recommendPhysicalShelf(tr.category, dev ? dev.logical_shelf : tr.logical_shelf);
+        const capCheck = checkShelfCapacity(targetShelf, 1);
+        if (!capCheck.ok) {
+          return sendJson(res, 400, { error: capCheck.error });
+        }
 
         db.prepare(`
           UPDATE devices
@@ -3291,6 +3403,10 @@ async function handleApi(req, res, urlObj) {
       if (!ret) continue;
 
       const targetShelf = physical_shelf_override || ret.recommended_physical_shelf || recommendPhysicalShelf(ret.category, 'KARANTİNA');
+      const capCheck = checkShelfCapacity(targetShelf, 1);
+      if (!capCheck.ok) {
+        return sendJson(res, 400, { error: capCheck.error });
+      }
 
       db.prepare(`
         UPDATE return_pool
@@ -3365,14 +3481,16 @@ async function handleApi(req, res, urlObj) {
       UPDATE devices SET last_report_seen_at = ?, sla_entry_date = ? WHERE serial_no = ?
     `);
     const stmtInsertNew = db.prepare(`
-      INSERT INTO devices (serial_no, category, model_name, logical_shelf, previous_logical_shelf, physical_shelf_code, location_status, sla_entry_date, sla_max_days, last_report_seen_at, notes)
-      VALUES (?, ?, ?, ?, ?, ?, 'DEPODA', ?, ?, ?, ?)
+      INSERT INTO devices (serial_no, category, model_name, logical_shelf, previous_logical_shelf, physical_shelf_code, recommended_new_physical_shelf, location_status, sla_entry_date, sla_max_days, last_report_seen_at, notes)
+      VALUES (?, ?, ?, ?, ?, 'RAF_BEKLİYOR', ?, 'DEPODA', ?, ?, ?, ?)
       ON CONFLICT(serial_no) DO UPDATE SET
         model_name = excluded.model_name,
         logical_shelf = excluded.logical_shelf,
         sla_entry_date = excluded.sla_entry_date,
         sla_max_days = excluded.sla_max_days,
         location_status = 'DEPODA',
+        physical_shelf_code = CASE WHEN devices.physical_shelf_code IS NULL OR devices.physical_shelf_code = '' THEN 'RAF_BEKLİYOR' ELSE devices.physical_shelf_code END,
+        recommended_new_physical_shelf = CASE WHEN devices.physical_shelf_code IS NULL OR devices.physical_shelf_code = '' OR devices.physical_shelf_code = 'RAF_BEKLİYOR' THEN excluded.recommended_new_physical_shelf ELSE devices.recommended_new_physical_shelf END,
         last_report_seen_at = excluded.last_report_seen_at
     `);
     const stmtDropInstalled = db.prepare(`

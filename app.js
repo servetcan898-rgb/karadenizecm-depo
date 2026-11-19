@@ -388,6 +388,7 @@ function renderAll() {
   if (CURRENT_USER?.role === 'KARŞILAMA') return renderKarsilamaRoleDedicatedView();
 
   renderMismatchBanner();
+  renderPendingPlacementBanner();
   renderKpiGrid();
   renderSlaAlerts();
   renderShelvesSummary();
@@ -813,13 +814,127 @@ function renderMismatchBanner() {
           </div>
         </div>
         <div class="flex items-center gap-2">
-          <button onclick="resolveShelfMismatch('${d.serial_no}', '${d.recommended_new_physical_shelf || ''}')" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow transition">
-            Fiziksel Rafı Güncelle (${d.recommended_new_physical_shelf || 'Yeni Raf'})
+          <select id="mismatch-target-shelf" class="theme-input px-2.5 py-1.5 text-xs font-mono font-semibold">
+            ${(APP_STATE.shelves || []).filter(s => s.category === d.category).map(s => {
+              const free = Math.max(0, (s.capacity || 500) - (s.current_count || 0));
+              const sel = s.code === d.recommended_new_physical_shelf ? 'selected' : '';
+              return `<option value="${s.code}" ${sel} ${free === 0 ? 'disabled' : ''}>${s.code} (${s.target_logical_shelf}) — ${free > 0 ? 'Boş: ' + free : 'DOLU'}</option>`;
+            }).join('')}
+          </select>
+          <button onclick="resolveShelfMismatch('${d.serial_no}', document.getElementById('mismatch-target-shelf')?.value || '${d.recommended_new_physical_shelf || ''}')" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow transition">
+            Onayla ve Rafa Taşı
           </button>
         </div>
       </div>
     </div>
   `;
+}
+
+// 1B. Pending Physical Shelf Placement Banner (New Devices from Reports wait for Depocu Approval & Free Shelf Capacity!)
+function renderPendingPlacementBanner() {
+  const banner = document.getElementById('pending-placement-banner');
+  if (!banner) return;
+  const pending = APP_STATE.pendingPlacementDevices || [];
+  if (!pending.length) {
+    banner.classList.add('hidden');
+    return;
+  }
+
+  // Group by category + logical_shelf so Depocu can cleanly approve in batches or partial batches!
+  const groupsMap = new Map();
+  for (const d of pending) {
+    const key = `${d.category}||${d.logical_shelf}`;
+    if (!groupsMap.has(key)) {
+      groupsMap.set(key, { category: d.category, logical_shelf: d.logical_shelf, count: 0, sampleSerials: [] });
+    }
+    const g = groupsMap.get(key);
+    g.count++;
+    if (g.sampleSerials.length < 4) g.sampleSerials.push(d.serial_no);
+  }
+  const groups = Array.from(groupsMap.values());
+
+  banner.classList.remove('hidden');
+  banner.innerHTML = `
+    <div class="space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-2 text-amber-500 font-bold text-xs">
+          <span>📦 Fiziksel Raf Yerleştirme Onayı Bekleyen Yeni Cihazlar</span>
+          <span class="px-2 py-0.5 rounded bg-amber-500 text-slate-950 text-[11px] font-mono font-extrabold">${pending.length} Cihaz</span>
+        </div>
+        <div class="text-[11px] text-sub">
+          Sistem boş kapasitesi olan uygun rafları önerir; dolu raflara cihaz atılmaz. Depocu onayı ile seçilen rafa yerleştirilir.
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 gap-2">
+        ${groups.map((g, idx) => {
+          const matchingShelves = (APP_STATE.shelves || []).filter(s => s.category === g.category);
+          const freeMatching = matchingShelves.filter(s => ((s.capacity || 500) - (s.current_count || 0)) > 0);
+          const bestShelf = freeMatching.find(s => s.target_logical_shelf === g.logical_shelf) || freeMatching[0] || null;
+          const bestFree = bestShelf ? Math.max(0, (bestShelf.capacity || 500) - (bestShelf.current_count || 0)) : 0;
+          const defaultQty = bestFree > 0 ? Math.min(g.count, bestFree) : g.count;
+
+          const optionsHtml = matchingShelves.map(s => {
+            const free = Math.max(0, (s.capacity || 500) - (s.current_count || 0));
+            const isSel = bestShelf && s.code === bestShelf.code ? 'selected' : '';
+            return `<option value="${s.code}" ${isSel} ${free === 0 ? 'disabled' : ''}>${s.code} (${s.target_logical_shelf}) — ${free > 0 ? 'Boş Yer: ' + free : 'KAPASİTE DOLU'}</option>`;
+          }).join('');
+
+          return `
+            <div class="subcard p-3 flex flex-wrap items-center justify-between gap-3 text-xs border-amber-500/30">
+              <div class="space-y-0.5">
+                <div class="flex items-center gap-2">
+                  <span class="px-2 py-0.5 rounded text-[10px] ${g.category === 'SOL' ? 'badge-sol' : 'badge-turkcell'}">${g.category}</span>
+                  <strong class="text-main">${g.logical_shelf}</strong>
+                  <span class="px-2 py-0.5 rounded bg-amber-500/15 text-amber-500 font-mono font-bold">${g.count} Cihaz Bekliyor</span>
+                </div>
+                <div class="text-[11px] text-mute font-mono">
+                  Örnek Seriler: ${g.sampleSerials.join(', ')}${g.count > 4 ? ' ...' : ''}
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                ${freeMatching.length > 0 ? `
+                  <select id="pending-shelf-sel-${idx}" class="theme-input px-2.5 py-1.5 text-xs font-mono font-semibold">
+                    ${optionsHtml}
+                  </select>
+                  <input id="pending-qty-${idx}" type="number" min="1" max="${g.count}" value="${defaultQty}" class="theme-input px-2 py-1.5 text-xs font-mono w-20 text-center" title="Bu rafa yerleştirilecek adet" />
+                  <button onclick="approvePendingShelfPlacement('${g.category}', '${g.logical_shelf}', ${idx})" class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition shadow">
+                    Onayla ve Rafa Al
+                  </button>
+                ` : `
+                  <span class="px-3 py-1.5 rounded-lg bg-red-500/15 text-red-500 font-bold text-[11px]">
+                    ⚠️ ${g.category} için boş kapasiteli raf yok! 7. Sekmeden yeni raf açın veya kapasite artırın.
+                  </span>
+                `}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+async function approvePendingShelfPlacement(category, logicalShelf, idx) {
+  const target_shelf_code = document.getElementById(`pending-shelf-sel-${idx}`)?.value;
+  const limit = Number(document.getElementById(`pending-qty-${idx}`)?.value || 0);
+  if (!target_shelf_code) return showToast('Lütfen boş kapasiteli bir fiziksel raf seçiniz.', 'warning');
+  if (!limit || limit < 1) return showToast('Geçerli bir adet giriniz.', 'warning');
+
+  try {
+    const res = await apiPost('/api/shelves/assign-pending', {
+      category,
+      logical_shelf: logicalShelf,
+      target_shelf_code,
+      limit
+    });
+    playBeep(960, 80);
+    showToast(`${res.assigned_count} adet cihaz onaylanarak '${res.shelf}' fiziksel rafına yerleştirildi.${res.remaining_in_group > 0 ? ' Kalan ' + res.remaining_in_group + ' cihaz için başka bir boş raf seçebilirsiniz.' : ''}`, 'success');
+    await loadDashboardData();
+  } catch (err) {
+    playBeep(320, 200);
+    showToast(err.message, 'error');
+  }
 }
 
 function prevMismatchSlide() {
@@ -1429,6 +1544,11 @@ function renderSyncResult(res) {
     <div class="p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/25 text-emerald-500 font-semibold">
       ✔ ${res.category} Stok Raporu Eşleştirildi (${res.total_in_report} Seri)
     </div>
+    ${res.newlyDiscoveredCount > 0 ? `
+      <div class="p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/35 text-amber-500 font-semibold text-xs">
+        📦 ${res.newlyDiscoveredCount} adet yeni cihaz otomatik rafa atılmadı — Depocu onayı için <strong>1. Sekme (Raf Onayı Bekleyen Yeni Cihazlar)</strong> listesine alındı.
+      </div>
+    ` : ''}
     <div class="space-y-1.5">
       <div class="font-semibold text-main">Teknisyen Zimmetinden Otomatik Düşülenler (${res.installedDropped.length}):</div>
       ${res.installedDropped.length === 0 ? '<p class="text-mute">Yok</p>' : res.installedDropped.map(i => `
@@ -1523,9 +1643,16 @@ function renderShipments() {
 
         ${b.status !== 'ONAYLANDI' ? `
           <div class="flex flex-wrap items-center gap-2">
-            <input id="scan-ship-${b.id}" oninput="handleAutoScannerInput(this, sn => scanShipmentItem(${b.id}, sn))" onkeydown="if(event.key==='Enter'){ scanShipmentItem(${b.id}, this.value); this.value=''; }" type="text" placeholder="Fiziksel gelen cihazları peş peşe okutun (Örn: SOL-NEW5003)..." class="theme-input flex-1 px-3.5 py-2 font-mono" />
-            <button onclick="approveShipmentBatch(${b.id}, '${b.recommended_shelf}')" class="px-4 py-2 rounded-xl ${isReady ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'card text-main'} font-bold transition">
-              Onayla ve ${b.recommended_shelf} Rafına Al
+            <input id="scan-ship-${b.id}" oninput="handleAutoScannerInput(this, sn => scanShipmentItem(${b.id}, sn))" onkeydown="if(event.key==='Enter'){ scanShipmentItem(${b.id}, this.value); this.value=''; }" type="text" placeholder="Fiziksel gelen cihazları peş peşe okutun..." class="theme-input flex-1 px-3.5 py-2 font-mono" />
+            <select id="ship-target-shelf-${b.id}" class="theme-input px-2.5 py-2 text-xs font-mono font-semibold">
+              ${(APP_STATE.shelves || []).filter(s => s.category === b.category).map(s => {
+                const free = Math.max(0, (s.capacity || 500) - (s.current_count || 0));
+                const sel = s.code === b.recommended_shelf ? 'selected' : '';
+                return `<option value="${s.code}" ${sel} ${free === 0 ? 'disabled' : ''}>${s.code} (${s.target_logical_shelf}) — ${free > 0 ? 'Boş: ' + free : 'DOLU'}</option>`;
+              }).join('')}
+            </select>
+            <button onclick="approveShipmentBatch(${b.id}, document.getElementById('ship-target-shelf-${b.id}')?.value || '${b.recommended_shelf || ''}')" class="px-4 py-2 rounded-xl ${isReady ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'card text-main'} font-bold transition">
+              Onayla ve Seçili Rafa Al
             </button>
           </div>
         ` : ''}
