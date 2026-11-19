@@ -759,7 +759,238 @@ function buildSlaExecutiveReport() {
   };
 }
 
-// Smart Automatic Notification Dispatcher (Supports TO, CC, HTML Dashboard Body, and Real .xlsx Attachments)
+// ==================== BUILT-IN ZERO-COST WHATSAPP ENGINE (BAILEYS QR + ANTI-SPAM QUEUE + DRIVE PERSISTENCE) ====================
+const WA_AUTH_DIR = path.join(DATA_DIR, 'wa_auth');
+if (!fs.existsSync(WA_AUTH_DIR)) fs.mkdirSync(WA_AUTH_DIR, { recursive: true });
+
+let waSock = null;
+let waState = 'DISCONNECTED'; // 'DISCONNECTED' | 'CONNECTING' | 'QR_READY' | 'CONNECTED' | 'MODULE_MISSING'
+let waQrDataUrl = null;
+let waConnectedPhone = '';
+let waLastError = '';
+let waQueue = [];
+let waQueueBusy = false;
+let waReconnectTimer = null;
+
+function normalizeTrPhone(raw) {
+  let digits = String(raw || '').replace(/[^0-9]/g, '');
+  if (!digits) return '';
+  if (digits.startsWith('0090')) digits = digits.slice(2);
+  if (digits.length === 11 && digits.startsWith('05')) digits = '90' + digits.slice(1);
+  if (digits.length === 10 && digits.startsWith('5')) digits = '90' + digits;
+  return digits.length >= 11 ? digits : '';
+}
+
+function exportWaAuthFiles() {
+  const out = {};
+  try {
+    if (!fs.existsSync(WA_AUTH_DIR)) return out;
+    for (const f of fs.readdirSync(WA_AUTH_DIR)) {
+      if (f.endsWith('.json')) {
+        out[f] = fs.readFileSync(path.join(WA_AUTH_DIR, f), 'utf8');
+      }
+    }
+  } catch (_) {}
+  return out;
+}
+
+function importWaAuthFiles(filesObj) {
+  if (!filesObj || typeof filesObj !== 'object') return false;
+  try {
+    if (!fs.existsSync(WA_AUTH_DIR)) fs.mkdirSync(WA_AUTH_DIR, { recursive: true });
+    let count = 0;
+    for (const [fname, content] of Object.entries(filesObj)) {
+      if (!fname.endsWith('.json') || fname.includes('/') || fname.includes('\\') || fname.includes('..')) continue;
+      if (typeof content === 'string') {
+        fs.writeFileSync(path.join(WA_AUTH_DIR, fname), content, 'utf8');
+        count++;
+      }
+    }
+    return count > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function processWaQueue() {
+  if (waQueueBusy) return;
+  if (!waSock || waState !== 'CONNECTED' || waQueue.length === 0) return;
+  waQueueBusy = true;
+  try {
+    while (waQueue.length > 0 && waSock && waState === 'CONNECTED') {
+      const item = waQueue.shift();
+      try {
+        const jid = `${item.phone}@s.whatsapp.net`;
+        await waSock.sendMessage(jid, { text: item.text });
+      } catch (err) {
+        console.error(`WhatsApp gonderim hatasi (${item.phone}):`, err.message);
+      }
+      // 2.5 second anti-spam delay between WhatsApp messages
+      if (waQueue.length > 0) {
+        await new Promise(r => setTimeout(r, 2500));
+      }
+    }
+  } finally {
+    waQueueBusy = false;
+  }
+}
+
+function enqueueWhatsAppMessage(phonesStr, title, message) {
+  const rawList = String(phonesStr || '').split(/[,;\n]+/).map(normalizeTrPhone).filter(Boolean);
+  const uniquePhones = [...new Set(rawList)];
+  if (!uniquePhones.length) return 0;
+
+  const formattedText = `*KARADENİZ EÇM*\n*${title}*\n\n${message}`;
+  for (const phone of uniquePhones) {
+    waQueue.push({ phone, text: formattedText });
+  }
+  processWaQueue();
+  return uniquePhones.length;
+}
+
+async function initWhatsAppConnection(forceFresh = false) {
+  if (waReconnectTimer) {
+    clearTimeout(waReconnectTimer);
+    waReconnectTimer = null;
+  }
+  if (forceFresh && waSock) {
+    try { waSock.end(undefined); } catch (_) {}
+    waSock = null;
+  }
+  if (waSock && (waState === 'CONNECTED' || waState === 'CONNECTING' || waState === 'QR_READY')) {
+    return getWhatsAppStatus();
+  }
+
+  let baileysMod, pinoMod, QRCodeMod;
+  try {
+    baileysMod = await import('@whiskeysockets/baileys');
+    pinoMod = await import('pino');
+    QRCodeMod = await import('qrcode');
+  } catch (err) {
+    waState = 'MODULE_MISSING';
+    waLastError = 'WhatsApp paketi (@whiskeysockets/baileys) henüz kurulu değil (Render dağıtımda otomatik kurulur).';
+    return getWhatsAppStatus();
+  }
+
+  const makeWASocket = baileysMod.default?.default || baileysMod.default || baileysMod.makeWASocket;
+  const useMultiFileAuthState = baileysMod.useMultiFileAuthState || baileysMod.default?.useMultiFileAuthState;
+  const DisconnectReason = baileysMod.DisconnectReason || baileysMod.default?.DisconnectReason || { loggedOut: 401 };
+  const fetchLatestBaileysVersion = baileysMod.fetchLatestBaileysVersion || baileysMod.default?.fetchLatestBaileysVersion;
+  const pino = pinoMod.default || pinoMod;
+  const QRCode = QRCodeMod.default || QRCodeMod;
+
+  waState = 'CONNECTING';
+  waLastError = '';
+  waQrDataUrl = null;
+
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState(WA_AUTH_DIR);
+    let version;
+    try {
+      if (fetchLatestBaileysVersion) {
+        const vInfo = await fetchLatestBaileysVersion();
+        version = vInfo?.version;
+      }
+    } catch (_) {}
+
+    waSock = makeWASocket({
+      ...(version ? { version } : {}),
+      auth: state,
+      logger: pino({ level: 'silent' }),
+      printQRInTerminal: false,
+      browser: ['Karadeniz ECM Depo', 'Chrome', '1.0.0'],
+      syncFullHistory: false
+    });
+
+    waSock.ev.on('creds.update', async () => {
+      await saveCreds();
+      scheduleCloudDatabaseSync();
+    });
+
+    waSock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+      if (qr) {
+        try {
+          waQrDataUrl = await QRCode.toDataURL(qr, { width: 260, margin: 2 });
+          waState = 'QR_READY';
+        } catch (qErr) {
+          waLastError = qErr.message;
+        }
+      }
+      if (connection === 'open') {
+        waState = 'CONNECTED';
+        waQrDataUrl = null;
+        waLastError = '';
+        waConnectedPhone = (waSock?.user?.id || '').split(':')[0].split('@')[0];
+        console.log(`WhatsApp baglandi: ${waConnectedPhone}`);
+        scheduleCloudDatabaseSync();
+        processWaQueue();
+      } else if (connection === 'close') {
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const loggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
+        waSock = null;
+        waQrDataUrl = null;
+        if (loggedOut) {
+          waState = 'DISCONNECTED';
+          waConnectedPhone = '';
+          waLastError = 'WhatsApp oturumu kapatıldı. Tekrar bağlamak için QR okutunuz.';
+          try {
+            for (const f of fs.readdirSync(WA_AUTH_DIR)) fs.unlinkSync(path.join(WA_AUTH_DIR, f));
+          } catch (_) {}
+        } else {
+          waState = 'CONNECTING';
+          waLastError = `Bağlantı koptu (${statusCode || 'net'}), 5 sn içinde yeniden bağlanılıyor...`;
+          waReconnectTimer = setTimeout(() => {
+            initWhatsAppConnection(false).catch(() => {});
+          }, 5000);
+        }
+      }
+    });
+  } catch (err) {
+    waState = 'DISCONNECTED';
+    waLastError = err.message;
+  }
+
+  return getWhatsAppStatus();
+}
+
+async function logoutWhatsApp() {
+  if (waReconnectTimer) {
+    clearTimeout(waReconnectTimer);
+    waReconnectTimer = null;
+  }
+  try {
+    if (waSock) await waSock.logout();
+  } catch (_) {}
+  try {
+    if (waSock) waSock.end(undefined);
+  } catch (_) {}
+  waSock = null;
+  waState = 'DISCONNECTED';
+  waQrDataUrl = null;
+  waConnectedPhone = '';
+  waLastError = '';
+  try {
+    if (fs.existsSync(WA_AUTH_DIR)) {
+      for (const f of fs.readdirSync(WA_AUTH_DIR)) fs.unlinkSync(path.join(WA_AUTH_DIR, f));
+    }
+  } catch (_) {}
+  scheduleCloudDatabaseSync();
+  return getWhatsAppStatus();
+}
+
+function getWhatsAppStatus() {
+  return {
+    state: waState,
+    connected: waState === 'CONNECTED',
+    phone: waConnectedPhone,
+    qrDataUrl: waQrDataUrl,
+    queueLength: waQueue.length,
+    error: waLastError
+  };
+}
+
+// Smart Automatic Notification Dispatcher (Supports TO, CC, HTML Dashboard Body, Real .xlsx Attachments & Built-in WhatsApp)
 async function dispatchAutoNotification({ recipient_name, recipient_phone, recipient_email, recipient_cc = '', category, title, message, htmlBody = '', attachment = null }) {
   if (!message || !message.trim()) return { ok: false, error: 'Boş mesaj' };
   const now = new Date().toISOString();
@@ -767,13 +998,18 @@ async function dispatchAutoNotification({ recipient_name, recipient_phone, recip
 
   db.prepare(`
     INSERT INTO notifications_log (recipient_name, recipient_phone, recipient_email, channel, category, title, message, auto_dispatched, created_at)
-    VALUES (?, ?, ?, 'OTOMATİK E-POSTA + BİLDİRİM', ?, ?, ?, 1, ?)
+    VALUES (?, ?, ?, 'OTOMATİK WHATSAPP + E-POSTA', ?, ?, ?, 1, ?)
   `).run(recipient_name, recipient_phone || '', loggedEmail, category, title, message, now);
 
   let mailSent = false;
   let mailError = '';
 
   try {
+    // 1. Built-in Baileys WhatsApp Engine (0 TL, rate-limited 2.5s queue)
+    if (recipient_phone && waState === 'CONNECTED') {
+      enqueueWhatsAppMessage(recipient_phone, title, message);
+    }
+    // 2. Optional external WhatsApp Webhook fallback
     const waWebhook = db.prepare(`SELECT value FROM gateway_settings WHERE key = 'whatsapp_webhook_url'`).get()?.value || process.env.WHATSAPP_WEBHOOK_URL;
     if (waWebhook && recipient_phone) {
       fetch(waWebhook, {
@@ -862,7 +1098,7 @@ async function sendSlaExecutiveDashboardReport(forceSend = false) {
 
     const res = await dispatchAutoNotification({
       recipient_name: 'Hasan İlker Kadıoğlu (TO) | Doğancan Aksoy, Mehmet Salih Celep, Servetcan Küçüksolak (CC)',
-      recipient_phone: '',
+      recipient_phone: '905303821619, 905616101203, 905330879563',
       recipient_email: report.toEmail,
       recipient_cc: report.ccEmail,
       category: 'OTOMATİK_SLA_DASHBOARD',
@@ -1488,7 +1724,7 @@ async function sendAllVehicleCountsFinalReport() {
 
   return dispatchAutoNotification({
     recipient_name: 'Hasan İlker Kadıoğlu (TO) | Servetcan Küçüksolak, Meryem Nas Kalafat, Doğancan Aksoy (CC)',
-    recipient_phone: '',
+    recipient_phone: '905303821619, 905616101203',
     recipient_email: DEFAULT_VEHICLE_FINAL_TO,
     recipient_cc: DEFAULT_VEHICLE_FINAL_CC,
     category: 'HAFTALIK_ARAÇ_SAYIM_FİNAL',
@@ -1623,7 +1859,7 @@ function sendWarehouseShelfCountReportEmail({ shelf, expectedCount, actualCount,
 
   dispatchAutoNotification({
     recipient_name: 'Hasan İlker Kadıoğlu (TO) | Doğancan Aksoy, Mehmet Salih Celep, Servetcan Küçüksolak, Meryem Nas Kalafat (CC)',
-    recipient_phone: '',
+    recipient_phone: '905303821619, 905616101203',
     recipient_email: DEFAULT_DEPOCOUNT_TO,
     recipient_cc: DEFAULT_DEPOCOUNT_CC,
     category: hasDiff ? 'OTOMATİK_DEPO_SAYIM_FARKI' : 'OTOMATİK_DEPO_SAYIM_SONUCU',
@@ -1781,7 +2017,8 @@ function getFullBackupObject() {
     transfer_pool: db.prepare(`SELECT * FROM transfer_pool`).all(),
     count_logs: db.prepare(`SELECT * FROM count_logs`).all(),
     gateway_settings: db.prepare(`SELECT * FROM gateway_settings`).all(),
-    notifications_log: db.prepare(`SELECT * FROM notifications_log ORDER BY id DESC LIMIT 200`).all()
+    notifications_log: db.prepare(`SELECT * FROM notifications_log ORDER BY id DESC LIMIT 200`).all(),
+    wa_auth_files: exportWaAuthFiles()
   };
 }
 
@@ -1852,6 +2089,10 @@ function applyFullBackupObject(data) {
       for (const gw of data.gateway_settings) {
         if (gw.key) insGw.run(gw.key, gw.value || '');
       }
+    }
+
+    if (data.wa_auth_files && typeof data.wa_auth_files === 'object') {
+      importWaAuthFiles(data.wa_auth_files);
     }
 
     db.exec('COMMIT');
@@ -3490,6 +3731,50 @@ async function handleApi(req, res, urlObj) {
     return sendJson(res, 200, { ok: true });
   }
 
+  // ==================== WHATSAPP QR ENGINE ENDPOINTS (YÖNETİCİ ONLY) ====================
+  if (pathname === '/api/whatsapp/status' && method === 'GET') {
+    return sendJson(res, 200, { ok: true, ...getWhatsAppStatus() });
+  }
+
+  if (pathname === '/api/whatsapp/connect' && method === 'POST') {
+    const body = await readBody(req);
+    if (body.user_role !== 'YÖNETİCİ') {
+      return sendJson(res, 403, { error: 'Yetki Hatası: WhatsApp bağlantısı yalnızca Yönetici tarafından başlatılabilir.' });
+    }
+    const status = await initWhatsAppConnection(!!body.force_fresh);
+    return sendJson(res, 200, { ok: true, ...status });
+  }
+
+  if (pathname === '/api/whatsapp/logout' && method === 'POST') {
+    const body = await readBody(req);
+    if (body.user_role !== 'YÖNETİCİ') {
+      return sendJson(res, 403, { error: 'Yetki Hatası.' });
+    }
+    const status = await logoutWhatsApp();
+    return sendJson(res, 200, { ok: true, ...status });
+  }
+
+  if (pathname === '/api/whatsapp/test' && method === 'POST') {
+    const body = await readBody(req);
+    if (body.user_role !== 'YÖNETİCİ') {
+      return sendJson(res, 403, { error: 'Yetki Hatası.' });
+    }
+    if (waState !== 'CONNECTED') {
+      return sendJson(res, 400, { error: 'WhatsApp henüz bağlı değil. Önce QR kodu okutunuz.' });
+    }
+    const phone = normalizeTrPhone(body.phone);
+    if (!phone) {
+      return sendJson(res, 400, { error: 'Geçerli bir telefon numarası giriniz (Örn: 5301234567 veya 905301234567).' });
+    }
+    const trDateTime = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+    enqueueWhatsAppMessage(
+      phone,
+      'WhatsApp Bağlantı Testi',
+      `KARADENİZ EÇM Depo ve Zimmet Yönetim Sistemi WhatsApp bildirimi başarıyla bağlandı.\nTarih/Saat: ${trDateTime}`
+    );
+    return sendJson(res, 200, { ok: true, phone });
+  }
+
   return sendJson(res, 404, { error: 'API uç noktası bulunamadı' });
 }
 
@@ -3539,7 +3824,11 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`KARADENIZ ECM Depo ve Zimmet Yonetim Sistemi calisiyor: http://localhost:${PORT}`);
-  restoreDatabaseFromCloudOnBoot();
+  await restoreDatabaseFromCloudOnBoot();
+  // Auto-reconnect WhatsApp if saved session exists (from local disk or restored from Google Drive!)
+  if (fs.existsSync(path.join(WA_AUTH_DIR, 'creds.json'))) {
+    initWhatsAppConnection(false).catch(err => console.error('WhatsApp auto-connect error:', err.message));
+  }
 });

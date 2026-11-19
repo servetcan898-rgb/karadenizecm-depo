@@ -1332,6 +1332,46 @@ function doPost(e) {
           </div>
         </div>
 
+        <!-- BUILT-IN WHATSAPP QR CONNECTION PANEL (0 TL, ALL BYS NUMBERS) -->
+        <div class="subcard p-4 space-y-3 border-l-4 border-emerald-500">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 class="text-xs font-bold text-main">WhatsApp Canlı QR Bağlantısı (Tüm BYS Numaralarına Otomatik Bildirim)</h3>
+              <p class="text-[11px] text-mute">
+                Şirket/depo WhatsApp hattından 1 kez <strong>Bağlı Cihazlar &rarr; QR Kod Okut</strong> yapın; oturum bulutta saklanır ve tüm teknisyen/yöneticilere otomatik WhatsApp gider.
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <span id="wa-status-badge" class="px-2.5 py-1 rounded-md text-[11px] font-bold bg-slate-500/15 text-mute">BAĞLI DEĞİL</span>
+              <button onclick="connectWhatsAppQr()" class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition shadow">
+                QR Kod Oluştur / Bağlan
+              </button>
+              <button onclick="logoutWhatsAppConnection()" class="px-3 py-1.5 rounded-lg card hover:border-red-500/50 text-red-500 text-xs font-semibold transition">
+                Bağlantıyı Kes
+              </button>
+            </div>
+          </div>
+
+          <div id="wa-qr-container" class="hidden flex flex-col sm:flex-row items-center gap-4 p-3 rounded-xl card">
+            <img id="wa-qr-img" src="" alt="WhatsApp QR Kodu" class="w-48 h-48 rounded-lg bg-white p-2 border border-slate-300" />
+            <div class="space-y-1.5 text-xs text-sub">
+              <div class="font-bold text-main text-sm">Telefonunuzdan QR Kodu Okutun:</div>
+              <div>1. Depo / Operasyon telefonunda <strong>WhatsApp</strong> uygulamasını açın.</div>
+              <div>2. Sağ üstten <strong>Menü (⋮) / Ayarlar &rarr; Bağlı Cihazlar &rarr; Cihaz Bağla</strong> yoluna girin.</div>
+              <div>3. Soldaki QR kodu telefon kamerasına okutun. Bağlandığı anda yeşil <strong>BAĞLI</strong> durumuna geçer.</div>
+            </div>
+          </div>
+
+          <div id="wa-error-box" class="hidden text-[11px] text-amber-500 font-medium"></div>
+
+          <div class="flex flex-wrap items-center gap-2 pt-1">
+            <input id="wa-test-phone" type="text" placeholder="Test Telefon No (Örn: 5616101203)" class="theme-input px-3 py-1.5 text-xs font-mono w-64" />
+            <button onclick="sendWhatsAppTestMessage()" class="px-3.5 py-1.5 rounded-lg subcard hover:border-emerald-500/50 text-emerald-500 text-xs font-bold transition">
+              Test WhatsApp Mesajı Gönder
+            </button>
+          </div>
+        </div>
+
         <!-- #1 Executive SLA Dashboard Email Settings -->
         <div class="subcard p-4 space-y-3 border-l-4 border-red-500">
           <div class="flex flex-wrap items-center justify-between gap-2">

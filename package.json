@@ -9,5 +9,10 @@
   },
   "engines": {
     "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.16",
+    "pino": "^9.6.0",
+    "qrcode": "^1.5.4"
   }
 }

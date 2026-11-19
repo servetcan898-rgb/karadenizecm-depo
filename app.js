@@ -3029,6 +3029,7 @@ async function renderNotifications() {
           if (slaCcIn && !slaCcIn.value) slaCcIn.value = res.settings.sla_report_cc || '';
         }
       } catch (_) {}
+      refreshWhatsAppStatus();
     } else {
       gwCard.classList.add('hidden');
     }
@@ -3050,6 +3051,87 @@ async function renderNotifications() {
       <div class="text-[11px] text-mute">Alıcı: <span class="text-main font-medium">${n.recipient_name}</span> • Tel: ${n.recipient_phone || '-'} • Mail: ${n.recipient_email || '-'}</div>
     </div>
   `).join('');
+}
+
+let WA_POLL_TIMER = null;
+
+function applyWhatsAppStatusUI(st) {
+  const badge = document.getElementById('wa-status-badge');
+  const qrBox = document.getElementById('wa-qr-container');
+  const qrImg = document.getElementById('wa-qr-img');
+  const errBox = document.getElementById('wa-error-box');
+  if (!badge) return;
+
+  if (st.connected) {
+    badge.textContent = `✔ BAĞLI (${st.phone || 'Aktif'})`;
+    badge.className = 'px-2.5 py-1 rounded-md text-[11px] font-bold bg-emerald-500/20 text-emerald-500';
+    if (qrBox) qrBox.classList.add('hidden');
+    if (WA_POLL_TIMER) { clearInterval(WA_POLL_TIMER); WA_POLL_TIMER = null; }
+  } else if (st.state === 'QR_READY' && st.qrDataUrl) {
+    badge.textContent = 'QR KOD HAZIR — OKUTUN';
+    badge.className = 'px-2.5 py-1 rounded-md text-[11px] font-bold bg-amber-500/20 text-amber-500';
+    if (qrImg) qrImg.src = st.qrDataUrl;
+    if (qrBox) qrBox.classList.remove('hidden');
+  } else if (st.state === 'CONNECTING') {
+    badge.textContent = 'BAĞLANIYOR...';
+    badge.className = 'px-2.5 py-1 rounded-md text-[11px] font-bold bg-sky-500/20 text-sky-500';
+  } else {
+    badge.textContent = 'BAĞLI DEĞİL';
+    badge.className = 'px-2.5 py-1 rounded-md text-[11px] font-bold bg-slate-500/15 text-mute';
+    if (qrBox) qrBox.classList.add('hidden');
+  }
+
+  if (errBox) {
+    if (st.error) {
+      errBox.textContent = st.error;
+      errBox.classList.remove('hidden');
+    } else {
+      errBox.classList.add('hidden');
+    }
+  }
+}
+
+async function refreshWhatsAppStatus() {
+  try {
+    const st = await apiGet('/api/whatsapp/status');
+    applyWhatsAppStatusUI(st);
+  } catch (_) {}
+}
+
+async function connectWhatsAppQr() {
+  if (CURRENT_USER?.role !== 'YÖNETİCİ') return showToast('Sadece Yönetici WhatsApp bağlantısı yapabilir.', 'warning');
+  try {
+    showToast('WhatsApp QR kodu hazırlanıyor, lütfen 3–5 saniye bekleyin...', 'info');
+    const st = await apiPost('/api/whatsapp/connect', { user_role: CURRENT_USER.role, force_fresh: false });
+    applyWhatsAppStatusUI(st);
+    if (WA_POLL_TIMER) clearInterval(WA_POLL_TIMER);
+    WA_POLL_TIMER = setInterval(refreshWhatsAppStatus, 3000);
+    setTimeout(refreshWhatsAppStatus, 1800);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function logoutWhatsAppConnection() {
+  if (!confirm('WhatsApp oturumu kapatılsın mı?')) return;
+  try {
+    const st = await apiPost('/api/whatsapp/logout', { user_role: CURRENT_USER?.role });
+    applyWhatsAppStatusUI(st);
+    showToast('WhatsApp bağlantısı kesildi.', 'info');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function sendWhatsAppTestMessage() {
+  const phone = document.getElementById('wa-test-phone')?.value.trim() || CURRENT_USER?.phone || '';
+  if (!phone) return showToast('Lütfen test için telefon numarası giriniz.', 'warning');
+  try {
+    const res = await apiPost('/api/whatsapp/test', { user_role: CURRENT_USER?.role, phone });
+    showToast(`Test WhatsApp mesajı ${res.phone} numarasına kuyruğa alındı.`, 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
 }
 
 function toggleAppsScriptGuide() {
