@@ -2,6 +2,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
 const PORT = process.env.PORT || 3000;
@@ -170,6 +171,14 @@ db.exec(`
 try {
   db.exec(`ALTER TABLE count_logs ADD COLUMN scanned_serials TEXT;`);
 } catch (_) {}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS auth_sessions (
+    token TEXT PRIMARY KEY,
+    personnel_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
+`);
 
 function computeSLA(device) {
   const maxDays = device.logical_shelf === 'KARANTİNA' || device.logical_shelf === 'ARIZA' ? 30 : 90;
@@ -2316,11 +2325,28 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
+function getAuthenticatedUser(req, urlObj) {
+  const authHeader = String(req.headers['authorization'] || '');
+  let token = '';
+  if (authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7).trim();
+  } else if (urlObj && urlObj.searchParams) {
+    token = (urlObj.searchParams.get('token') || '').trim();
+  }
+  if (!token) return null;
+  return db.prepare(`
+    SELECT p.id, p.employee_code, p.username, p.full_name, p.team_name, p.role, p.phone, p.email, p.active, s.token
+    FROM auth_sessions s
+    INNER JOIN personnel p ON p.id = s.personnel_id
+    WHERE s.token = ? AND p.active = 1
+  `).get(token) || null;
+}
+
 async function handleApi(req, res, urlObj) {
   const pathname = urlObj.pathname;
   const method = req.method;
 
-  // AUTH: Login with BYS credentials
+  // AUTH: Login with BYS credentials (Public)
   if (pathname === '/api/auth/login' && method === 'POST') {
     const body = await readBody(req);
     const identifier = (body.username || '').trim();
@@ -2336,15 +2362,83 @@ async function handleApi(req, res, urlObj) {
     if (!user) {
       return sendJson(res, 401, { error: 'Kullanıcı adı/BYS sicil no veya şifre hatalı ya da personel aktif değil.' });
     }
-    return sendJson(res, 200, { ok: true, user });
+    const token = crypto.randomBytes(24).toString('hex');
+    db.prepare(`INSERT INTO auth_sessions (token, personnel_id, created_at) VALUES (?, ?, ?)`).run(token, user.id, new Date().toISOString());
+    return sendJson(res, 200, { ok: true, user, token });
   }
 
-  // GET /api/dashboard (Role-filtered data!)
+  // GLOBAL SERVER-SIDE SESSION GUARD (Every other /api/* endpoint requires a valid Bearer token!)
+  const authUser = getAuthenticatedUser(req, urlObj);
+  if (!authUser) {
+    return sendJson(res, 401, { error: 'Oturum geçersiz veya süresi doldu. Lütfen tekrar giriş yapınız.' });
+  }
+
+  // AUTH: Logout
+  if (pathname === '/api/auth/logout' && method === 'POST') {
+    db.prepare(`DELETE FROM auth_sessions WHERE token = ?`).run(authUser.token);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // AUTH: User changes their own password (All roles)
+  if (pathname === '/api/auth/change-password' && method === 'POST') {
+    const body = await readBody(req);
+    const currentPwd = String(body.current_password || '').trim();
+    const newPwd = String(body.new_password || '').trim();
+    if (!currentPwd || !newPwd) return sendJson(res, 400, { error: 'Mevcut şifre ve yeni şifre zorunludur.' });
+    if (newPwd.length < 4) return sendJson(res, 400, { error: 'Yeni şifre en az 4 karakter olmalıdır.' });
+
+    const existing = db.prepare(`SELECT id, password FROM personnel WHERE id = ?`).get(authUser.id);
+    if (!existing || existing.password !== currentPwd) {
+      return sendJson(res, 400, { error: 'Mevcut şifreniz hatalı.' });
+    }
+    db.prepare(`UPDATE personnel SET password = ? WHERE id = ?`).run(newPwd, authUser.id);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // ADMIN: Reset any user's password (YÖNETİCİ ONLY)
+  if (pathname === '/api/personnel/reset-password' && method === 'POST') {
+    if (authUser.role !== 'YÖNETİCİ') {
+      return sendJson(res, 403, { error: 'Yetki Hatası: Şifre sıfırlama işlemi yalnızca YÖNETİCİ tarafından yapılabilir.' });
+    }
+    const body = await readBody(req);
+    const targetId = Number(body.personnel_id || 0);
+    const newPwd = String(body.new_password || '123456').trim();
+    if (!targetId || newPwd.length < 4) {
+      return sendJson(res, 400, { error: 'Geçerli personel ve en az 4 karakterli şifre giriniz.' });
+    }
+    db.prepare(`UPDATE personnel SET password = ? WHERE id = ?`).run(newPwd, targetId);
+    // Invalidate target user's old sessions so they must re-login with new password
+    db.prepare(`DELETE FROM auth_sessions WHERE personnel_id = ?`).run(targetId);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // SERVER-SIDE RBAC ENFORCEMENT ON SENSITIVE ENDPOINTS
+  const adminOnlyPaths = [
+    '/api/shelves/create', '/api/shelves/rename', '/api/shelves/move-devices', '/api/shelves/delete',
+    '/api/personnel/import', '/api/settings/gateway', '/api/reports/send-sla-dashboard-email',
+    '/api/settings/test-notification', '/api/system/reset-sample-data', '/api/system/backup-json',
+    '/api/system/restore-json', '/api/whatsapp/status', '/api/whatsapp/connect',
+    '/api/whatsapp/logout', '/api/whatsapp/test'
+  ];
+  if (adminOnlyPaths.includes(pathname) && authUser.role !== 'YÖNETİCİ') {
+    return sendJson(res, 403, { error: 'Yetki Hatası: Bu işlem yalnızca YÖNETİCİ rolü tarafından yapılabilir.' });
+  }
+
+  const depoOrAdminPaths = [
+    '/api/reports/sync-turkcell', '/api/dispatch/check-fifo', '/api/dispatch/commit',
+    '/api/transfers/approve', '/api/transfers/reject', '/api/returns/approve',
+    '/api/counts/shelf', '/api/counts/vehicle-campaign/start', '/api/counts/vehicle-campaign/stop',
+    '/api/counts/vehicle-campaign/send-final', '/api/shipments/import', '/api/shipments/scan',
+    '/api/shipments/approve', '/api/shelves/resolve-mismatch', '/api/reports/sla-dashboard-xlsx'
+  ];
+  if (depoOrAdminPaths.includes(pathname) && authUser.role !== 'YÖNETİCİ' && authUser.role !== 'DEPOCU') {
+    return sendJson(res, 403, { error: 'Yetki Hatası: Bu işlem yalnızca YÖNETİCİ veya DEPOCU tarafından yapılabilir.' });
+  }
+
+  // GET /api/dashboard (Strictly filtered by authenticated server-side user!)
   if (pathname === '/api/dashboard' && method === 'GET') {
     runAutomaticBackgroundChecks();
-    const userId = Number(urlObj.searchParams.get('user_id') || 0);
-    const currentUser = db.prepare(`SELECT * FROM personnel WHERE id = ?`).get(userId) ||
-                        db.prepare(`SELECT * FROM personnel WHERE role = 'YÖNETİCİ' LIMIT 1`).get();
+    const currentUser = db.prepare(`SELECT id, employee_code, username, full_name, team_name, role, phone, email, active, vehicle_count_status, last_vehicle_count_at FROM personnel WHERE id = ?`).get(authUser.id);
 
     const rawDevices = db.prepare(`
       SELECT d.*, p.full_name as personnel_name, p.team_name, p.phone as personnel_phone, p.email as personnel_email
@@ -2888,9 +2982,12 @@ async function handleApi(req, res, urlObj) {
     const addedSerials = [];
     for (const item of validItems) {
       const sn = item.serial_no;
-      const cat = item.category || (sn.startsWith('SPX') ? 'TURKCELL' : 'SOL');
+      // Look up real device in devices table first so real SOL/TURKCELL category & model are detected accurately!
+      const knownDev = db.prepare(`SELECT category, model_name FROM devices WHERE UPPER(serial_no) = ?`).get(sn);
+      const cat = knownDev ? knownDev.category : (item.category || (sn.startsWith('SPX') ? 'TURKCELL' : 'SOL'));
+      const modelName = (knownDev && knownDev.model_name) ? knownDev.model_name : (item.model_name || (cat === 'SOL' ? 'SOL İade Cihaz' : 'Turkcell SPX İade Cihaz'));
       const recShelf = recommendPhysicalShelf(cat, 'KARANTİNA');
-      insertRet.run(sn, cat, item.model_name || (cat === 'SOL' ? 'SOL İade Cihaz' : 'Turkcell SPX İade Cihaz'), source_type, person ? person.id : null, reporterName, item.customer_note || '', now, recShelf);
+      insertRet.run(sn, cat, modelName, source_type, person ? person.id : null, reporterName, item.customer_note || '', now, recShelf);
       addedSerials.push(sn);
     }
 

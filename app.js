@@ -1,4 +1,5 @@
 let CURRENT_USER = null;
+let AUTH_TOKEN = '';
 
 let APP_STATE = {
   role: 'YÖNETİCİ',
@@ -164,29 +165,46 @@ function handleAutoScannerInput(inputEl, callback) {
   scannerTimers.set(inputEl, timer);
 }
 
+function authHeaders(extra = {}) {
+  const h = { ...extra };
+  if (AUTH_TOKEN) h['Authorization'] = `Bearer ${AUTH_TOKEN}`;
+  return h;
+}
+
+function handleUnauthorizedSession() {
+  CURRENT_USER = null;
+  AUTH_TOKEN = '';
+  localStorage.removeItem('krdnz_user');
+  localStorage.removeItem('krdnz_token');
+  document.getElementById('login-screen')?.classList.remove('hidden');
+}
+
 async function apiGet(url) {
-  const res = await fetch(url);
-  return await res.json();
+  const res = await fetch(url, { headers: authHeaders() });
+  const json = await res.json();
+  if (res.status === 401) {
+    handleUnauthorizedSession();
+    throw new Error(json.error || 'Oturum süresi doldu. Lütfen tekrar giriş yapınız.');
+  }
+  if (!res.ok) throw new Error(json.error || 'Veri alınamadı');
+  return json;
 }
 
 async function apiPost(url, data) {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(data)
   });
   const json = await res.json();
+  if (res.status === 401 && url !== '/api/auth/login') {
+    handleUnauthorizedSession();
+  }
   if (!res.ok) throw new Error(json.error || 'İşlem başarısız');
   return json;
 }
 
-// ==================== AUTH & STRICT RBAC ====================
-async function quickLogin(username, password) {
-  document.getElementById('login-username').value = username;
-  document.getElementById('login-password').value = password;
-  await submitLogin();
-}
-
+// ==================== AUTH, PASSWORD MANAGEMENT & STRICT RBAC ====================
 async function submitLogin() {
   const username = document.getElementById('login-username').value.trim();
   const password = document.getElementById('login-password').value.trim();
@@ -196,7 +214,10 @@ async function submitLogin() {
   try {
     const res = await apiPost('/api/auth/login', { username, password });
     CURRENT_USER = res.user;
+    AUTH_TOKEN = res.token || '';
     localStorage.setItem('krdnz_user', JSON.stringify(CURRENT_USER));
+    localStorage.setItem('krdnz_token', AUTH_TOKEN);
+    document.getElementById('login-password').value = '';
     document.getElementById('login-screen').classList.add('hidden');
     await loadDashboardData();
     applyRoleViewPermissions();
@@ -206,10 +227,56 @@ async function submitLogin() {
   }
 }
 
-function logoutUser() {
-  CURRENT_USER = null;
-  localStorage.removeItem('krdnz_user');
-  document.getElementById('login-screen').classList.remove('hidden');
+async function logoutUser() {
+  try {
+    if (AUTH_TOKEN) await apiPost('/api/auth/logout', {});
+  } catch (_) {}
+  handleUnauthorizedSession();
+}
+
+function openChangePasswordModal() {
+  const m = document.getElementById('change-password-modal');
+  if (!m) return;
+  document.getElementById('cp-current').value = '';
+  document.getElementById('cp-new').value = '';
+  document.getElementById('cp-confirm').value = '';
+  m.classList.remove('hidden');
+  m.classList.add('flex');
+}
+
+function closeChangePasswordModal() {
+  const m = document.getElementById('change-password-modal');
+  if (!m) return;
+  m.classList.add('hidden');
+  m.classList.remove('flex');
+}
+
+async function submitChangePassword() {
+  const current_password = document.getElementById('cp-current')?.value.trim() || '';
+  const new_password = document.getElementById('cp-new')?.value.trim() || '';
+  const confirm_password = document.getElementById('cp-confirm')?.value.trim() || '';
+  if (!current_password || !new_password) return showToast('Tüm şifre alanlarını doldurunuz.', 'warning');
+  if (new_password.length < 4) return showToast('Yeni şifre en az 4 karakter olmalıdır.', 'warning');
+  if (new_password !== confirm_password) return showToast('Yeni şifre ve tekrar alanı eşleşmiyor.', 'error');
+  try {
+    await apiPost('/api/auth/change-password', { current_password, new_password });
+    closeChangePasswordModal();
+    showToast('Şifreniz başarıyla güncellendi.', 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function resetPersonnelPassword(personnelId, fullName) {
+  const newPwd = prompt(`${fullName} kullanıcısı için yeni şifre giriniz (En az 4 karakter):`, '123456');
+  if (!newPwd) return;
+  if (newPwd.trim().length < 4) return showToast('Şifre en az 4 karakter olmalıdır.', 'warning');
+  try {
+    await apiPost('/api/personnel/reset-password', { personnel_id: personnelId, new_password: newPwd.trim() });
+    showToast(`${fullName} kullanıcısının şifresi güncellendi ve eski oturumları kapatıldı.`, 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
 }
 
 function applyRoleViewPermissions() {
@@ -2649,6 +2716,7 @@ function renderPersonnelAndShelvesConfig() {
             <th>Ekip</th>
             <th>Telefon</th>
             <th>Zimmet</th>
+            <th>İşlem</th>
           </tr>
         </thead>
         <tbody>
@@ -2661,6 +2729,11 @@ function renderPersonnelAndShelvesConfig() {
               <td class="text-sub">${p.team_name}</td>
               <td class="font-mono text-emerald-500">${p.phone}</td>
               <td class="font-bold text-main">${p.assigned_device_count}</td>
+              <td>
+                <button onclick="resetPersonnelPassword(${p.id}, '${p.full_name.replace(/'/g, "\\'")}')" class="px-2 py-0.5 rounded card hover:border-sky-500/50 text-sky-500 text-[10px] font-semibold transition">
+                  Şifre
+                </button>
+              </td>
             </tr>
           `).join('')}
         </tbody>
@@ -2699,7 +2772,7 @@ function renderPersonnelAndShelvesConfig() {
 
           ${isEditing ? `
             <div class="p-2.5 rounded-xl card border-sky-500/40 flex flex-wrap items-center gap-2">
-              <span class="text-[11px] text-sub font-medium">Yeni Raf İsmi:</span>
+              <span class="text-[11px] text-sub font-medium">Raf İsmi:</span>
               <input id="rename-input-${s.code}" type="text" value="${s.code}" class="theme-input px-2.5 py-1 font-mono font-bold text-xs w-28" />
               <select id="rename-logical-${s.code}" class="theme-input px-2 py-1 text-xs">
                 <option value="SAĞLAM" ${s.target_logical_shelf === 'SAĞLAM' ? 'selected' : ''}>SAĞLAM (90G)</option>
@@ -2707,6 +2780,8 @@ function renderPersonnelAndShelvesConfig() {
                 <option value="KARANTİNA" ${s.target_logical_shelf === 'KARANTİNA' ? 'selected' : ''}>KARANTİNA (30G)</option>
                 <option value="ARIZA" ${s.target_logical_shelf === 'ARIZA' ? 'selected' : ''}>ARIZA (30G)</option>
               </select>
+              <span class="text-[11px] text-sub font-medium">Kapasite:</span>
+              <input id="rename-cap-${s.code}" type="number" min="1" value="${s.capacity || 500}" class="theme-input px-2 py-1 font-mono text-xs w-20" />
               <button onclick="saveShelfRename('${s.code}')" class="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs">
                 Kaydet
               </button>
@@ -2755,6 +2830,7 @@ function toggleEditShelfMode(code) {
 async function saveShelfRename(oldCode) {
   const newCode = (document.getElementById(`rename-input-${oldCode}`)?.value || '').trim().toUpperCase();
   const newLogical = document.getElementById(`rename-logical-${oldCode}`)?.value;
+  const newCapacity = Number(document.getElementById(`rename-cap-${oldCode}`)?.value || 500);
   if (!newCode) return showToast('Yeni raf ismi boş olamaz.', 'warning');
 
   try {
@@ -2762,10 +2838,11 @@ async function saveShelfRename(oldCode) {
       user_role: CURRENT_USER?.role,
       old_code: oldCode,
       new_code: newCode,
-      target_logical_shelf: newLogical
+      target_logical_shelf: newLogical,
+      capacity: newCapacity
     });
     delete SHELF_EDIT_STATE[oldCode];
-    showToast(`Raf '${oldCode}' ➔ '${newCode}' olarak güncellendi (İçindeki cihazlar yeni raf adına aktarıldı).`, 'success');
+    showToast(`Raf '${oldCode}' ➔ '${newCode}' (Kapasite: ${newCapacity}) olarak güncellendi.`, 'success');
     await loadDashboardData();
   } catch (err) {
     showToast(err.message, 'error');
@@ -3160,7 +3237,7 @@ async function saveGatewaySettings() {
 }
 
 function downloadSlaDashboardExcel() {
-  window.location.href = '/api/reports/sla-dashboard-xlsx';
+  window.location.href = `/api/reports/sla-dashboard-xlsx?token=${encodeURIComponent(AUTH_TOKEN || '')}`;
   showToast('4 sekmeli Kritik SLA Excel raporu indiriliyor...', 'info');
 }
 
@@ -3348,12 +3425,16 @@ window.addEventListener('DOMContentLoaded', async () => {
   applyTheme(savedTheme);
 
   const savedUser = localStorage.getItem('krdnz_user');
-  if (savedUser) {
+  const savedToken = localStorage.getItem('krdnz_token');
+  if (savedUser && savedToken) {
     try {
       CURRENT_USER = JSON.parse(savedUser);
+      AUTH_TOKEN = savedToken;
       document.getElementById('login-screen').classList.add('hidden');
       await loadDashboardData();
       applyRoleViewPermissions();
-    } catch (_) {}
+    } catch (_) {
+      handleUnauthorizedSession();
+    }
   }
 });
