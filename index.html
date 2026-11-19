@@ -1072,6 +1072,24 @@
               <span>Tümü Excel</span>
             </button>
           </div>
+          <!-- Weekly Vehicle Count Campaign & Hourly Reminder Controls -->
+          <div class="subcard p-3 space-y-2 text-xs">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="font-semibold text-main">Haftalık Sayım & Saatlik Mail Hatırlatma:</span>
+              <span id="vehicle-campaign-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-500/15 text-mute">KAPALI</span>
+            </div>
+            <div class="flex flex-wrap items-center gap-1.5">
+              <button onclick="startWeeklyVehicleCountCampaign()" class="px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] transition">
+                Haftalık Sayımı Başlat (Saatlik Hatırlat)
+              </button>
+              <button onclick="stopWeeklyVehicleCountCampaign()" class="px-2.5 py-1.5 rounded-lg card hover:border-red-500/50 text-red-500 font-semibold text-[11px] transition">
+                Hatırlatmayı Durdur
+              </button>
+              <button onclick="sendAllVehicleCountsFinalEmail()" class="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[11px] transition">
+                Toplu Raporu Mail At
+              </button>
+            </div>
+          </div>
           <div id="tech-vehicle-status-list" class="space-y-2.5 max-h-[560px] overflow-y-auto pr-1"></div>
         </div>
       </div>

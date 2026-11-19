@@ -2317,7 +2317,51 @@ function renderCountsView() {
     }).join('');
   }
 
+  const campBadge = document.getElementById('vehicle-campaign-badge');
+  if (campBadge) {
+    if (APP_STATE.vehicleCountCampaignActive) {
+      campBadge.textContent = 'AKTİF (1 SAATTE BİR HATIRLATMA AÇIK)';
+      campBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-500';
+    } else {
+      campBadge.textContent = 'KAPALI';
+      campBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-slate-500/15 text-mute';
+    }
+  }
+
   renderCountLogsTable();
+}
+
+async function startWeeklyVehicleCountCampaign() {
+  if (!confirm('Üzerinde cihaz bulunan tüm teknisyenler için haftalık araç sayımı başlatılsın ve sayım tamamlanana kadar saatlik hatırlatma maili gönderilsin mi?')) return;
+  try {
+    const res = await apiPost('/api/counts/vehicle-campaign/start', { user_role: CURRENT_USER?.role });
+    showToast(`Haftalık araç sayımı başlatıldı! ${res.pending_count} teknisyene ilk hatırlatma maili gönderildi (tamamlayana kadar saatlik devam edecek).`, 'success');
+    await loadDashboardData();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function stopWeeklyVehicleCountCampaign() {
+  try {
+    await apiPost('/api/counts/vehicle-campaign/stop', { user_role: CURRENT_USER?.role });
+    showToast('Saatlik araç sayım hatırlatma mailleri durduruldu.', 'info');
+    await loadDashboardData();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function sendAllVehicleCountsFinalEmail() {
+  try {
+    showToast('Tüm teknisyen araç sayım raporu ve Excel eki gönderiliyor...', 'info');
+    const res = await apiPost('/api/counts/vehicle-campaign/send-final', { user_role: CURRENT_USER?.role });
+    if (res.ok) showToast('Tüm teknisyen araç sayım raporu + Excel eki gönderildi.', 'success');
+    else showToast(`Gönderim uyarısı: ${res.error || 'Kontrol ediniz'}`, 'warning');
+    await loadDashboardData();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
 }
 
 function exportSingleTechVehicleCountToExcel(techId) {

@@ -428,6 +428,11 @@ function buildMultiSheetXlsxBuffer(sheets) {
 const DEFAULT_SLA_REPORT_TO = 'hasan.kadioglu@bireysel.superonline.net';
 const DEFAULT_SLA_REPORT_CC = 'dogancan.aksoy@guraks.com.tr, mehmet.celep@sam.superonline.net, servetcan.kucuksolak@sam.superonline.net';
 const DEFAULT_DISPATCH_REPORT_CC = 'hasan.kadioglu@bireysel.superonline.net, servetcan.kucuksolak@sam.superonline.net';
+const DEFAULT_VEHICLE_REMINDER_CC = 'hasan.kadioglu@bireysel.superonline.net, servetcan.kucuksolak@sam.superonline.net, mehmet.celep@sam.superonline.net';
+const DEFAULT_VEHICLE_FINAL_TO = 'hasan.kadioglu@bireysel.superonline.net';
+const DEFAULT_VEHICLE_FINAL_CC = 'servetcan.kucuksolak@sam.superonline.net, meryem.kalafat@bireysel.superonline.net, dogancan.aksoy@guraks.com.tr';
+const DEFAULT_DEPOCOUNT_TO = 'hasan.kadioglu@bireysel.superonline.net';
+const DEFAULT_DEPOCOUNT_CC = 'dogancan.aksoy@guraks.com.tr, mehmet.celep@sam.superonline.net, servetcan.kucuksolak@sam.superonline.net, meryem.kalafat@bireysel.superonline.net';
 
 function getSettingValue(key, fallback = '') {
   const row = db.prepare(`SELECT value FROM gateway_settings WHERE key = ?`).get(key);
@@ -810,6 +815,7 @@ async function dispatchAutoNotification({ recipient_name, recipient_phone, recip
 function getIstanbulDateParts() {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Europe/Istanbul',
+    weekday: 'short',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -821,6 +827,7 @@ function getIstanbulDateParts() {
   const hour = Number(get('hour')) % 24;
   const minute = Number(get('minute'));
   return {
+    weekday: get('weekday'), // 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'
     dateStr: `${get('year')}-${get('month')}-${get('day')}`,
     hour,
     minute
@@ -1067,9 +1074,696 @@ function buildTechnicianDispatchEmail(person, batchDevices, dispatchedBy) {
   };
 }
 
-// Background Automatic SLA Escalation Engine (Sends single daily Executive Dashboard + 4-Sheet Excel to configured TO/CC)
+// ==================== #4 TECHNICIAN TRANSFER EMAIL (TALEP / ONAY / RED - CORPORATE HTML) ====================
+function buildTransferStatusEmail({ stage, items = [], fromPerson, toPerson, targetShelf = '', resolvedBy = '', rejectReason = '', note = '' }) {
+  const trDateTime = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+  const isToWarehouse = !toPerson;
+  const fromName = fromPerson ? fromPerson.full_name : 'Teknisyen';
+  const toName = toPerson ? `${toPerson.full_name} (${toPerson.team_name || ''})` : `Merkez Depo${targetShelf ? ' (' + targetShelf + ')' : ''}`;
+  const defaultCc = getSettingValue('dispatch_report_cc', DEFAULT_DISPATCH_REPORT_CC);
+
+  let accentColor = '#d97706';
+  let badgeBg = '#fef3c7';
+  let badgeText = '#b45309';
+  let stageTitle = 'Onay Bekleyen Cihaz Transfer Talebi';
+  let summaryLine = `${fromName}, aşağıdaki ${items.length} adet cihazı ${toName} tarafına devretmek için transfer talebi oluşturdu. Depo onayı beklenmektedir.`;
+
+  if (stage === 'ONAYLANDI') {
+    accentColor = '#059669';
+    badgeBg = '#d1fae5';
+    badgeText = '#065f46';
+    stageTitle = 'Cihaz Transferi Onaylandı — Zimmet Devredildi';
+    summaryLine = isToWarehouse
+      ? `${fromName} tarafından kullanılmadan depoya iade edilen ${items.length} adet cihaz ${resolvedBy} tarafından onaylanarak zimmetten düşülmüş ve ${targetShelf || 'depo'} rafına alınmıştır.`
+      : `${fromName} tarafından ${toPerson.full_name} teknisyenine devredilen ${items.length} adet cihaz ${resolvedBy} tarafından onaylanmıştır. İlgili cihaz(lar) devreden teknisyenin zimmetinden düşülerek ${toPerson.full_name} zimmetine aktarılmıştır.`;
+  } else if (stage === 'REDDEDİLDİ') {
+    accentColor = '#dc2626';
+    badgeBg = '#fee2e2';
+    badgeText = '#991b1b';
+    stageTitle = 'Cihaz Transfer Talebi Reddedildi';
+    summaryLine = `${fromName} ➔ ${toName} yönündeki transfer talebi ${resolvedBy} tarafından reddedilmiştir. İlgili cihaz(lar) ${fromName} zimmetinde kalmaya devam etmektedir.${rejectReason ? ' Gerekçe: ' + rejectReason : ''}`;
+  }
+
+  const rowsHtml = items.map(it => {
+    const slaTxt = typeof it.days_remaining === 'number'
+      ? (it.days_remaining <= 0 ? `SLA AŞILDI (${Math.abs(it.days_remaining)}G)` : `${it.days_remaining} Gün`)
+      : '-';
+    const slaClr = (typeof it.days_remaining === 'number' && it.days_remaining <= 10) ? '#dc2626' : '#059669';
+    return `
+      <tr>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-family:Consolas,monospace;font-size:12px;font-weight:700;color:#0f172a;">${xmlEscape(it.serial_no)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;">
+          <span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700;background:${it.category === 'SOL' ? '#dbeafe' : '#fef3c7'};color:${it.category === 'SOL' ? '#1d4ed8' : '#b45309'};">${xmlEscape(it.category || '-')}</span>
+        </td>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;color:#0f172a;">${xmlEscape(it.model_name || '-')}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;color:#334155;">${xmlEscape(fromName)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a;">${xmlEscape(toName)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:12px;font-weight:700;color:${slaClr};">${xmlEscape(slaTxt)}</td>
+      </tr>`;
+  }).join('');
+
+  const htmlBody = `
+  <div style="font-family:'Segoe UI',Arial,sans-serif;background:#f1f5f9;padding:20px;color:#0f172a;">
+    <div style="max-width:740px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #cbd5e1;">
+      <div style="background:#0f172a;padding:20px 24px;border-bottom:4px solid ${accentColor};">
+        <div style="font-size:11px;letter-spacing:1.4px;color:#facc15;font-weight:700;text-transform:uppercase;">KARADENİZ EÇM • CİHAZ TRANSFER BİLDİRİMİ</div>
+        <div style="font-size:19px;font-weight:800;color:#ffffff;margin-top:4px;">${xmlEscape(stageTitle)}</div>
+        <div style="font-size:12px;color:#cbd5e1;margin-top:4px;">Tarih / Saat: ${trDateTime}</div>
+      </div>
+      <div style="padding:20px 24px;">
+        <div style="background:${badgeBg};color:${badgeText};padding:12px 14px;border-radius:8px;font-size:13px;font-weight:600;line-height:1.5;margin-bottom:16px;">
+          ${xmlEscape(summaryLine)}
+        </div>
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #cbd5e1;margin-bottom:14px;">
+          <thead>
+            <tr style="background:#0f172a;color:#ffffff;">
+              <th style="padding:8px 10px;text-align:left;font-size:11px;">Seri No</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;">Kategori</th>
+              <th style="padding:8px 10px;text-align:left;font-size:11px;">Model</th>
+              <th style="padding:8px 10px;text-align:left;font-size:11px;">Devreden</th>
+              <th style="padding:8px 10px;text-align:left;font-size:11px;">Devralan / Hedef</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;">Kalan SLA</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+        ${note ? `<div style="font-size:12px;color:#475569;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px 12px;"><strong>Açıklama / Not:</strong> ${xmlEscape(note)}</div>` : ''}
+      </div>
+      <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:11px 24px;font-size:11px;color:#64748b;text-align:center;">
+        Bu e-posta <strong>KARADENİZ EÇM Depo ve Zimmet Yönetim Sistemi</strong> tarafından otomatik olarak gönderilmiştir.
+      </div>
+    </div>
+  </div>`;
+
+  let toEmail = '';
+  let ccEmail = defaultCc;
+  let recipientName = '';
+
+  if (stage === 'TALEP') {
+    // TO: Devralan Teknisyen (depoya iadede Depo Sorumlusu), CC: Hasan İlker Kadıoğlu, Servetcan Küçüksolak
+    if (toPerson && toPerson.email) {
+      toEmail = toPerson.email;
+      ccEmail = defaultCc;
+      recipientName = `${toPerson.full_name} (TO) | Hasan İlker Kadıoğlu, Servetcan Küçüksolak (CC)`;
+    } else {
+      toEmail = DEFAULT_SLA_REPORT_TO;
+      ccEmail = [...new Set([fromPerson?.email, 'servetcan.kucuksolak@sam.superonline.net'].filter(Boolean))].join(', ');
+      recipientName = `Hasan İlker Kadıoğlu (TO) | ${fromName}, Servetcan Küçüksolak (CC)`;
+    }
+  } else {
+    // ONAYLANDI veya REDDEDİLDİ -> TO: Devralan + Devreden, CC: Hasan İlker Kadıoğlu, Servetcan Küçüksolak
+    const toList = [...new Set([toPerson?.email, fromPerson?.email].filter(Boolean))];
+    toEmail = toList.join(', ') || DEFAULT_SLA_REPORT_TO;
+    ccEmail = defaultCc;
+    const toNames = [...new Set([toPerson?.full_name, fromPerson?.full_name].filter(Boolean))].join(', ');
+    recipientName = `${toNames} (TO) | Hasan İlker Kadıoğlu, Servetcan Küçüksolak (CC)`;
+  }
+
+  const serialPreview = items.map(i => i.serial_no).join(', ');
+  const subject = `[KARADENİZ EÇM] ${stageTitle} (${items.length === 1 ? serialPreview : items.length + ' Cihaz'})`;
+  const textBody = `${summaryLine}\nSeri Numaraları: ${serialPreview}`;
+
+  return { toEmail, ccEmail, recipientName, subject, textBody, htmlBody };
+}
+
+// ==================== #5 WEEKLY VEHICLE COUNT & MONTHLY WAREHOUSE COUNT EMAILS ====================
+function getPendingVehicleCountTechnicians() {
+  return db.prepare(`
+    SELECT p.*,
+      (SELECT COUNT(*) FROM devices d WHERE d.assigned_personnel_id = p.id AND d.location_status = 'TEKNİSYENDE') as assigned_count
+    FROM personnel p
+    WHERE p.role = 'TEKNİSYEN' AND p.active = 1 AND p.vehicle_count_status = 'BEKLİYOR'
+      AND (SELECT COUNT(*) FROM devices d WHERE d.assigned_personnel_id = p.id AND d.location_status = 'TEKNİSYENDE') > 0
+  `).all();
+}
+
+async function sendHourlyVehicleCountReminders(forceNow = false) {
+  const tr = getIstanbulDateParts();
+
+  // AUTOMATIC MONDAY TRIGGER: Every Monday at 09:00 (TR time), automatically reset pending technicians & activate hourly reminders (no button click needed!)
+  if (!forceNow && tr.weekday === 'Mon' && tr.hour >= 9) {
+    const lastMondayInit = getSettingValue('last_monday_count_reset_date', '');
+    if (lastMondayInit !== tr.dateStr) {
+      db.prepare(`
+        UPDATE personnel
+        SET vehicle_count_status = 'BEKLİYOR'
+        WHERE role = 'TEKNİSYEN' AND active = 1
+          AND id IN (SELECT DISTINCT assigned_personnel_id FROM devices WHERE location_status = 'TEKNİSYENDE' AND assigned_personnel_id IS NOT NULL)
+      `).run();
+      setSettingValue('last_monday_count_reset_date', tr.dateStr);
+      setSettingValue('vehicle_count_campaign_active', '1');
+      setSettingValue('last_vehicle_reminder_sent_ms', '0'); // Send first Monday reminder immediately!
+      console.log(`Pazartesi haftalik arac sayimi otomatik olarak baslatildi (${tr.dateStr}).`);
+    }
+  }
+
+  const isActive = getSettingValue('vehicle_count_campaign_active', '0') === '1';
+  if (!isActive && !forceNow) return { ok: true, skipped: true };
+
+  // Avoid spamming overnight (send automatically between 09:00 and 21:59 TR time unless manually forced)
+  if (!forceNow && (tr.hour < 9 || tr.hour >= 22)) {
+    return { ok: true, skipped: true };
+  }
+
+  const lastMs = Number(getSettingValue('last_vehicle_reminder_sent_ms', '0')) || 0;
+  const nowMs = Date.now();
+  if (!forceNow && (nowMs - lastMs) < 60 * 60 * 1000) {
+    return { ok: true, skipped: true };
+  }
+
+  const pendingTechs = getPendingVehicleCountTechnicians();
+  if (pendingTechs.length === 0) {
+    if (isActive) setSettingValue('vehicle_count_campaign_active', '0');
+    return { ok: true, sent_count: 0 };
+  }
+
+  setSettingValue('last_vehicle_reminder_sent_ms', String(nowMs));
+  const trDateTime = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+
+  for (const tech of pendingTechs) {
+    if (!tech.email) continue;
+    const htmlBody = `
+    <div style="font-family:'Segoe UI',Arial,sans-serif;background:#f1f5f9;padding:20px;color:#0f172a;">
+      <div style="max-width:680px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #cbd5e1;">
+        <div style="background:#0f172a;padding:18px 24px;border-bottom:4px solid #f59e0b;">
+          <div style="font-size:11px;letter-spacing:1.4px;color:#facc15;font-weight:700;text-transform:uppercase;">KARADENİZ EÇM • HAFTALIK ARAÇ SAYIMI</div>
+          <div style="font-size:18px;font-weight:800;color:#ffffff;margin-top:4px;">Araç Sayımınız Bekleniyor</div>
+          <div style="font-size:12px;color:#cbd5e1;margin-top:4px;">Hatırlatma Zamanı: ${trDateTime}</div>
+        </div>
+        <div style="padding:20px 24px;">
+          <p style="font-size:14px;line-height:1.6;color:#0f172a;margin:0 0 14px 0;">
+            Sayın <strong>${xmlEscape(tech.full_name)}</strong>,
+          </p>
+          <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:14px;font-size:13px;color:#92400e;line-height:1.6;">
+            Haftalık araç sayımınız sistemde <strong>BEKLİYOR</strong> durumundadır. Üzerinizde şu an <strong>${tech.assigned_count} adet</strong> aktif zimmetli cihaz bulunmaktadır.<br/><br/>
+            Lütfen mobil ekranınızdan kamera ile aracınızdaki cihazları okutarak sayımınızı tamamlayınız.
+          </div>
+        </div>
+        <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:11px 24px;font-size:11px;color:#64748b;text-align:center;">
+          Bu hatırlatma sayım tamamlanana kadar saatlik olarak otomatik gönderilmektedir — <strong>KARADENİZ EÇM</strong>
+        </div>
+      </div>
+    </div>`;
+
+    const textBody = `Sayın ${tech.full_name}, haftalık araç sayımınız beklenmektedir. Üzerinizde ${tech.assigned_count} adet aktif cihaz bulunmaktadır. Lütfen mobil ekranınızdan sayımınızı tamamlayınız.`;
+
+    dispatchAutoNotification({
+      recipient_name: `${tech.full_name} (TO) | Hasan İlker Kadıoğlu, Servetcan Küçüksolak, Mehmet Salih Celep (CC)`,
+      recipient_phone: tech.phone || '',
+      recipient_email: tech.email,
+      recipient_cc: DEFAULT_VEHICLE_REMINDER_CC,
+      category: 'HAFTALIK_SAYIM_HATIRLATMA',
+      title: `[KARADENİZ EÇM] Haftalık Araç Sayımı Bekleniyor — Lütfen Sayımınızı Tamamlayınız (${tech.full_name})`,
+      message: textBody,
+      htmlBody
+    });
+  }
+
+  return { ok: true, sent_count: pendingTechs.length };
+}
+
+function sendTechnicianVehicleMissingEmail(person, missingDevices, expectedCount, scannedCount) {
+  const trDateTime = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+  const rowsHtml = missingDevices.map(d => {
+    const sla = computeSLA(d);
+    return `
+      <tr>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-family:Consolas,monospace;font-size:12px;font-weight:700;color:#dc2626;">${xmlEscape(d.serial_no)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:11px;font-weight:700;">${xmlEscape(d.category)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;color:#0f172a;">${xmlEscape(d.model_name)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;color:#334155;">${xmlEscape(d.logical_shelf)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:12px;font-weight:700;color:${sla.days_remaining <= 10 ? '#dc2626' : '#0f172a'};">${sla.days_remaining} Gün</td>
+      </tr>`;
+  }).join('');
+
+  const htmlBody = `
+  <div style="font-family:'Segoe UI',Arial,sans-serif;background:#f1f5f9;padding:20px;color:#0f172a;">
+    <div style="max-width:720px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #cbd5e1;">
+      <div style="background:#0f172a;padding:18px 24px;border-bottom:4px solid #dc2626;">
+        <div style="font-size:11px;letter-spacing:1.4px;color:#facc15;font-weight:700;text-transform:uppercase;">KARADENİZ EÇM • HAFTALIK ARAÇ SAYIM EKSİK UYARISI</div>
+        <div style="font-size:19px;font-weight:800;color:#ffffff;margin-top:4px;">Araç Sayımında ${missingDevices.length} Adet Eksik Cihaz Tespit Edildi</div>
+        <div style="font-size:12px;color:#cbd5e1;margin-top:4px;">Sayım Zamanı: ${trDateTime} &nbsp;|&nbsp; Beklenen: ${expectedCount} • Okutulan: ${scannedCount} • Eksik: ${missingDevices.length}</div>
+      </div>
+      <div style="padding:20px 24px;">
+        <p style="font-size:14px;line-height:1.6;color:#0f172a;margin:0 0 14px 0;">
+          Sayın <strong>${xmlEscape(person.full_name)}</strong>, haftalık araç sayımınız sonucunda zimmetinizde kayıtlı olan aşağıdaki <strong>${missingDevices.length} adet</strong> seri numaralı cihazınız okutulmamış (eksik) olarak tespit edilmiştir:
+        </p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #cbd5e1;">
+          <thead>
+            <tr style="background:#991b1b;color:#ffffff;">
+              <th style="padding:8px 10px;text-align:left;font-size:11px;">Eksik Seri No</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;">Kategori</th>
+              <th style="padding:8px 10px;text-align:left;font-size:11px;">Model</th>
+              <th style="padding:8px 10px;text-align:left;font-size:11px;">Statü</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;">Kalan SLA</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+      <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:11px 24px;font-size:11px;color:#64748b;text-align:center;">
+        Bu bildirim <strong>KARADENİZ EÇM Depo ve Zimmet Yönetim Sistemi</strong> tarafından otomatik oluşturulmuştur.
+      </div>
+    </div>
+  </div>`;
+
+  const missingSerialsStr = missingDevices.map(d => d.serial_no).join(', ');
+  dispatchAutoNotification({
+    recipient_name: `${person.full_name} (TO) | Hasan İlker Kadıoğlu, Servetcan Küçüksolak (CC)`,
+    recipient_phone: person.phone || '',
+    recipient_email: person.email || DEFAULT_VEHICLE_FINAL_TO,
+    recipient_cc: DEFAULT_DISPATCH_REPORT_CC,
+    category: 'OTOMATİK_SAYIM_ALARMI',
+    title: `[KARADENİZ EÇM] Araç Sayımı Eksik Cihaz Uyarısı — ${person.full_name} (${missingDevices.length} Eksik)`,
+    message: `Sayın ${person.full_name}, haftalık araç sayımınızda şu seri numaralı cihazlarınız eksik tespit edilmiştir: ${missingSerialsStr}.`,
+    htmlBody
+  });
+}
+
+async function sendAllVehicleCountsFinalReport() {
+  const tr = getIstanbulDateParts();
+  const trDateTime = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+
+  const techs = db.prepare(`SELECT * FROM personnel WHERE role = 'TEKNİSYEN' AND active = 1 ORDER BY full_name ASC`).all();
+  const summaryRows = [];
+  const missingDetailRows = [];
+  let totalExpected = 0;
+  let totalScanned = 0;
+  let totalMissing = 0;
+  let okTechCount = 0;
+  let missingTechCount = 0;
+
+  for (const t of techs) {
+    const activeDevs = db.prepare(`SELECT * FROM devices WHERE assigned_personnel_id = ? AND location_status = 'TEKNİSYENDE'`).all(t.id);
+    const lastLog = db.prepare(`SELECT * FROM count_logs WHERE count_type = 'HAFTALIK_ARAÇ' AND target_ref = ? ORDER BY id DESC LIMIT 1`).get(String(t.id));
+    if (activeDevs.length === 0 && !lastLog) continue;
+
+    const exp = lastLog ? lastLog.expected_count : activeDevs.length;
+    const scn = lastLog ? lastLog.scanned_count : 0;
+    const missList = lastLog && lastLog.missing_serials ? lastLog.missing_serials.split(',').map(s => s.trim()).filter(Boolean) : [];
+    const st = t.vehicle_count_status || (lastLog ? lastLog.status : 'BEKLİYOR');
+
+    totalExpected += exp;
+    totalScanned += scn;
+    totalMissing += missList.length;
+    if (missList.length > 0) missingTechCount++;
+    else if (st === 'TAMAMLANDI' || st === 'TAM') okTechCount++;
+
+    summaryRows.push({
+      name: t.full_name,
+      team: t.team_name,
+      phone: t.phone || '-',
+      expected: exp,
+      scanned: scn,
+      missingCount: missList.length,
+      status: st,
+      countedAt: t.last_vehicle_count_at ? new Date(t.last_vehicle_count_at).toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' }) : '-',
+      missingSerials: missList.join(', ') || '-'
+    });
+
+    for (const sn of missList) {
+      const dev = db.prepare(`SELECT * FROM devices WHERE serial_no = ?`).get(sn);
+      const sla = dev ? computeSLA(dev) : { days_remaining: '-' };
+      missingDetailRows.push([
+        t.full_name, t.team_name, t.phone || '-', sn,
+        dev ? dev.category : '-', dev ? dev.model_name : '-',
+        dev ? dev.logical_shelf : '-', sla.days_remaining
+      ]);
+    }
+  }
+
+  const xlsxBuffer = buildMultiSheetXlsxBuffer([
+    {
+      name: 'Teknisyen_Sayim_Ozeti',
+      columns: [
+        { header: 'Teknisyen Adı', width: 24 },
+        { header: 'Ekip / Görev', width: 26 },
+        { header: 'Telefon', width: 16 },
+        { header: 'Beklenen Adet', width: 14 },
+        { header: 'Okutulan Adet', width: 14 },
+        { header: 'Eksik Adet', width: 12 },
+        { header: 'Durum', width: 14 },
+        { header: 'Sayım Tarihi', width: 20 },
+        { header: 'Eksik Seri Numaraları', width: 38 }
+      ],
+      rows: summaryRows.map(r => [r.name, r.team, r.phone, r.expected, r.scanned, r.missingCount, r.status, r.countedAt, r.missingSerials])
+    },
+    {
+      name: 'Eksik_Cihaz_Detaylari',
+      columns: [
+        { header: 'Teknisyen Adı', width: 24 },
+        { header: 'Ekip / Görev', width: 26 },
+        { header: 'Telefon', width: 16 },
+        { header: 'Eksik Seri No', width: 22 },
+        { header: 'Kategori', width: 12 },
+        { header: 'Model', width: 30 },
+        { header: 'Mantıksal Raf', width: 16 },
+        { header: 'Kalan SLA (Gün)', width: 15 }
+      ],
+      rows: missingDetailRows.length ? missingDetailRows : [['Eksik cihaz bulunmamaktadır.', '-', '-', '-', '-', '-', '-', '-']]
+    }
+  ]);
+
+  const filename = `KaradenizECM_Haftalik_Arac_Sayim_Raporu_${tr.dateStr}.xlsx`;
+  const tableHtml = summaryRows.map(r => `
+    <tr>
+      <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a;">${xmlEscape(r.name)}<div style="font-size:11px;font-weight:400;color:#64748b;">${xmlEscape(r.team)}</div></td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:12px;">${r.expected}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:12px;font-weight:700;color:#059669;">${r.scanned}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:12px;font-weight:700;color:${r.missingCount > 0 ? '#dc2626' : '#94a3b8'};">${r.missingCount}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;">
+        <span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;background:${r.missingCount > 0 ? '#fee2e2' : '#d1fae5'};color:${r.missingCount > 0 ? '#991b1b' : '#065f46'};">${xmlEscape(r.status)}</span>
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-family:Consolas,monospace;font-size:11px;color:#dc2626;">${xmlEscape(r.missingSerials)}</td>
+    </tr>`).join('');
+
+  const htmlBody = `
+  <div style="font-family:'Segoe UI',Arial,sans-serif;background:#f1f5f9;padding:20px;color:#0f172a;">
+    <div style="max-width:760px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #cbd5e1;">
+      <div style="background:#0f172a;padding:20px 24px;border-bottom:4px solid ${totalMissing > 0 ? '#dc2626' : '#059669'};">
+        <div style="font-size:11px;letter-spacing:1.4px;color:#facc15;font-weight:700;text-transform:uppercase;">KARADENİZ EÇM • HAFTALIK ARAÇ SAYIMI TAMAMLANDI</div>
+        <div style="font-size:20px;font-weight:800;color:#ffffff;margin-top:4px;">Tüm Teknisyenler Haftalık Araç Sayım Sonuç Raporu</div>
+        <div style="font-size:12px;color:#cbd5e1;margin-top:4px;">Tamamlanma Zamanı: ${trDateTime}</div>
+      </div>
+      <div style="padding:20px 24px;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:8px 0;margin:0 -8px 18px -8px;">
+          <tr>
+            <td width="25%" style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:10px;padding:10px;text-align:center;">
+              <div style="font-size:11px;font-weight:700;color:#334155;">Sayılan Teknisyen</div>
+              <div style="font-size:22px;font-weight:900;color:#0f172a;margin-top:3px;">${summaryRows.length}</div>
+            </td>
+            <td width="25%" style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;padding:10px;text-align:center;">
+              <div style="font-size:11px;font-weight:700;color:#065f46;">Eksiksiz Tamamlayan</div>
+              <div style="font-size:22px;font-weight:900;color:#059669;margin-top:3px;">${okTechCount}</div>
+            </td>
+            <td width="25%" style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:10px;text-align:center;">
+              <div style="font-size:11px;font-weight:700;color:#991b1b;">Eksik Çıkan Ekip</div>
+              <div style="font-size:22px;font-weight:900;color:#dc2626;margin-top:3px;">${missingTechCount}</div>
+            </td>
+            <td width="25%" style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px;text-align:center;">
+              <div style="font-size:11px;font-weight:700;color:#92400e;">Toplam Eksik Cihaz</div>
+              <div style="font-size:22px;font-weight:900;color:#dc2626;margin-top:3px;">${totalMissing}</div>
+            </td>
+          </tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #cbd5e1;margin-bottom:14px;">
+          <thead>
+            <tr style="background:#0f172a;color:#ffffff;">
+              <th style="padding:8px 10px;text-align:left;font-size:11px;">Teknisyen / Ekip</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;">Beklenen</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;">Okutulan</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;">Eksik</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;">Durum</th>
+              <th style="padding:8px 10px;text-align:left;font-size:11px;">Eksik Seriler</th>
+            </tr>
+          </thead>
+          <tbody>${tableHtml}</tbody>
+        </table>
+        <div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:10px 14px;font-size:12px;color:#334155;">
+          Detaylı teknisyen özeti ve eksik cihaz seri dökümü ekteki <strong>${filename}</strong> dosyasında yer almaktadır.
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  return dispatchAutoNotification({
+    recipient_name: 'Hasan İlker Kadıoğlu (TO) | Servetcan Küçüksolak, Meryem Nas Kalafat, Doğancan Aksoy (CC)',
+    recipient_phone: '',
+    recipient_email: DEFAULT_VEHICLE_FINAL_TO,
+    recipient_cc: DEFAULT_VEHICLE_FINAL_CC,
+    category: 'HAFTALIK_ARAÇ_SAYIM_FİNAL',
+    title: `[KARADENİZ EÇM] Haftalık Araç Sayımı Tamamlandı — ${summaryRows.length} Teknisyen (${totalMissing} Eksik) | ${tr.dateStr}`,
+    message: `Tüm teknisyenlerin haftalık araç sayımları tamamlanmıştır. Toplam ${summaryRows.length} teknisyen, beklenen ${totalExpected}, okutulan ${totalScanned}, eksik ${totalMissing} cihaz. Detaylar ekteki Excel dosyasındadır.`,
+    htmlBody,
+    attachment: {
+      filename,
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      base64: xlsxBuffer.toString('base64')
+    }
+  });
+}
+
+function sendWarehouseShelfCountReportEmail({ shelf, expectedCount, actualCount, status, shelfDevices, matchedSerials, missingSerials, extraSerials }) {
+  const tr = getIstanbulDateParts();
+  const trDateTime = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+  const hasDiff = status !== 'TAM';
+
+  const verifiedList = matchedSerials.length > 0
+    ? matchedSerials.map(m => [m.serial_no, shelf.category, m.model_name, shelf.target_logical_shelf, shelf.code])
+    : shelfDevices.map(d => [d.serial_no, d.category, d.model_name, d.logical_shelf, shelf.code]);
+
+  const xlsxBuffer = buildMultiSheetXlsxBuffer([
+    {
+      name: 'Sayim_Ozeti',
+      columns: [{ header: 'Bilgi', width: 32 }, { header: 'Değer', width: 34 }],
+      rows: [
+        ['Fiziksel Raf Kodu', shelf.code],
+        ['Ürün Grubu / Kategori', shelf.category],
+        ['Hedef Mantıksal Raf', shelf.target_logical_shelf],
+        ['Sayım Tarihi ve Saati', trDateTime],
+        ['Sistemde Beklenen Adet', expectedCount],
+        ['Fiziksel Sayılan Adet', actualCount],
+        ['Eksik Seri Adedi', missingSerials.length],
+        ['Fazla / Yanlış Raf Seri Adedi', extraSerials.length],
+        ['Sayım Sonucu', status]
+      ]
+    },
+    {
+      name: 'Eksik_Seriler',
+      columns: [
+        { header: 'Eksik Seri No', width: 22 },
+        { header: 'Model', width: 32 },
+        { header: 'Mantıksal Raf', width: 18 },
+        { header: 'Sistemde Kayıtlı Raf', width: 18 }
+      ],
+      rows: missingSerials.length
+        ? missingSerials.map(m => [m.serial_no, m.model_name, m.logical_shelf, shelf.code])
+        : [['Eksik seri bulunmamaktadır.', '-', '-', '-']]
+    },
+    {
+      name: 'Fazla_Yanlis_Raf_Seriler',
+      columns: [
+        { header: 'Fazla / Yanlış Seri No', width: 22 },
+        { header: 'Model', width: 32 },
+        { header: 'Sistemdeki Mevcut Konumu', width: 42 }
+      ],
+      rows: extraSerials.length
+        ? extraSerials.map(e => [e.serial_no, e.model_name, e.system_location])
+        : [['Fazla veya yanlış raf serisi bulunmamaktadır.', '-', '-']]
+    },
+    {
+      name: 'Dogrulanan_Raftaki_Seriler',
+      columns: [
+        { header: 'Seri No', width: 22 },
+        { header: 'Kategori', width: 12 },
+        { header: 'Model', width: 32 },
+        { header: 'Mantıksal Raf', width: 18 },
+        { header: 'Fiziksel Raf', width: 14 }
+      ],
+      rows: verifiedList.length ? verifiedList : [['Rafta cihaz bulunmamaktadır.', '-', '-', '-', '-']]
+    }
+  ]);
+
+  const filename = `KaradenizECM_Depo_Sayim_${shelf.code}_${tr.dateStr}.xlsx`;
+  const missingHtml = missingSerials.length
+    ? missingSerials.map(m => `<tr><td style="padding:7px 10px;border-bottom:1px solid #e2e8f0;font-family:Consolas,monospace;font-size:12px;font-weight:700;color:#dc2626;">${xmlEscape(m.serial_no)}</td><td style="padding:7px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;">${xmlEscape(m.model_name)}</td><td style="padding:7px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;">${xmlEscape(m.logical_shelf)}</td></tr>`).join('')
+    : `<tr><td colspan="3" style="padding:10px;text-align:center;font-size:12px;color:#059669;">Eksik seri bulunmamaktadır.</td></tr>`;
+
+  const extraHtml = extraSerials.length
+    ? extraSerials.map(e => `<tr><td style="padding:7px 10px;border-bottom:1px solid #e2e8f0;font-family:Consolas,monospace;font-size:12px;font-weight:700;color:#d97706;">${xmlEscape(e.serial_no)}</td><td style="padding:7px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;">${xmlEscape(e.model_name)}</td><td style="padding:7px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;">${xmlEscape(e.system_location)}</td></tr>`).join('')
+    : `<tr><td colspan="3" style="padding:10px;text-align:center;font-size:12px;color:#059669;">Fazla / yanlış raf serisi bulunmamaktadır.</td></tr>`;
+
+  const htmlBody = `
+  <div style="font-family:'Segoe UI',Arial,sans-serif;background:#f1f5f9;padding:20px;color:#0f172a;">
+    <div style="max-width:740px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #cbd5e1;">
+      <div style="background:#0f172a;padding:20px 24px;border-bottom:4px solid ${hasDiff ? '#dc2626' : '#059669'};">
+        <div style="font-size:11px;letter-spacing:1.4px;color:#facc15;font-weight:700;text-transform:uppercase;">KARADENİZ EÇM • AYLIK DEPO RAF SAYIM RAPORU</div>
+        <div style="font-size:20px;font-weight:800;color:#ffffff;margin-top:4px;">${xmlEscape(shelf.code)} (${xmlEscape(shelf.category)} • ${xmlEscape(shelf.target_logical_shelf)}) — ${hasDiff ? 'FARK TESPİT EDİLDİ' : 'SAYIM EKSİKSİZ TAM'}</div>
+        <div style="font-size:12px;color:#cbd5e1;margin-top:4px;">Sayım Zamanı: ${trDateTime}</div>
+      </div>
+      <div style="padding:20px 24px;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:8px 0;margin:0 -8px 18px -8px;">
+          <tr>
+            <td width="25%" style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:10px;padding:10px;text-align:center;">
+              <div style="font-size:11px;font-weight:700;color:#334155;">Beklenen Adet</div>
+              <div style="font-size:22px;font-weight:900;color:#0f172a;margin-top:3px;">${expectedCount}</div>
+            </td>
+            <td width="25%" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:10px;text-align:center;">
+              <div style="font-size:11px;font-weight:700;color:#1e40af;">Fiziksel Sayılan</div>
+              <div style="font-size:22px;font-weight:900;color:#1d4ed8;margin-top:3px;">${actualCount}</div>
+            </td>
+            <td width="25%" style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:10px;text-align:center;">
+              <div style="font-size:11px;font-weight:700;color:#991b1b;">Eksik Seri</div>
+              <div style="font-size:22px;font-weight:900;color:#dc2626;margin-top:3px;">${missingSerials.length}</div>
+            </td>
+            <td width="25%" style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px;text-align:center;">
+              <div style="font-size:11px;font-weight:700;color:#92400e;">Fazla / Yanlış Raf</div>
+              <div style="font-size:22px;font-weight:900;color:#d97706;margin-top:3px;">${extraSerials.length}</div>
+            </td>
+          </tr>
+        </table>
+        ${hasDiff ? `
+          <div style="font-size:13px;font-weight:800;color:#991b1b;margin-bottom:6px;">Rafta Bulunmayan (Eksik) Seriler (${missingSerials.length})</div>
+          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #cbd5e1;margin-bottom:14px;">
+            <thead><tr style="background:#991b1b;color:#ffffff;"><th style="padding:7px 10px;text-align:left;font-size:11px;">Seri No</th><th style="padding:7px 10px;text-align:left;font-size:11px;">Model</th><th style="padding:7px 10px;text-align:left;font-size:11px;">Statü</th></tr></thead>
+            <tbody>${missingHtml}</tbody>
+          </table>
+          <div style="font-size:13px;font-weight:800;color:#92400e;margin-bottom:6px;">Fazla / Yanlış Raftan Çıkan Seriler (${extraSerials.length})</div>
+          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #cbd5e1;margin-bottom:14px;">
+            <thead><tr style="background:#92400e;color:#ffffff;"><th style="padding:7px 10px;text-align:left;font-size:11px;">Seri No</th><th style="padding:7px 10px;text-align:left;font-size:11px;">Model</th><th style="padding:7px 10px;text-align:left;font-size:11px;">Sistemdeki Konumu</th></tr></thead>
+            <tbody>${extraHtml}</tbody>
+          </table>
+        ` : `<div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:12px 14px;font-size:13px;color:#065f46;font-weight:600;margin-bottom:14px;">${xmlEscape(shelf.code)} rafındaki ${actualCount} adet cihaz sistem stoğuyla birebir eşleşmiştir.</div>`}
+        <div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:10px 14px;font-size:12px;color:#334155;">
+          Detaylı 4 sekmeli sayım dökümü ekteki <strong>${filename}</strong> dosyasındadır (<em>Sayim_Ozeti, Eksik_Seriler, Fazla_Yanlis_Raf_Seriler, Dogrulanan_Raftaki_Seriler</em>).
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  dispatchAutoNotification({
+    recipient_name: 'Hasan İlker Kadıoğlu (TO) | Doğancan Aksoy, Mehmet Salih Celep, Servetcan Küçüksolak, Meryem Nas Kalafat (CC)',
+    recipient_phone: '',
+    recipient_email: DEFAULT_DEPOCOUNT_TO,
+    recipient_cc: DEFAULT_DEPOCOUNT_CC,
+    category: hasDiff ? 'OTOMATİK_DEPO_SAYIM_FARKI' : 'OTOMATİK_DEPO_SAYIM_SONUCU',
+    title: `[KARADENİZ EÇM] Depo Raf Sayım Sonucu: ${shelf.code} (${hasDiff ? 'FARK VAR' : 'TAM'} — ${actualCount}/${expectedCount})`,
+    message: `${shelf.code} rafı sayımı tamamlandı. Beklenen: ${expectedCount}, Sayılan: ${actualCount}, Eksik: ${missingSerials.length}, Fazla: ${extraSerials.length}. Detaylı Excel ektedir.`,
+    htmlBody,
+    attachment: {
+      filename,
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      base64: xlsxBuffer.toString('base64')
+    }
+  });
+}
+
+// ==================== #6 DAILY TECHNICIAN SLA PRIORITY INSTALL REMINDER (23:59 TR) ====================
+let techSlaSendInProgress = false;
+async function sendDailyTechnicianSlaEmails(forceSend = false) {
+  const tr = getIstanbulDateParts();
+  const lastSent = getSettingValue('last_tech_sla_sent_date', '');
+
+  if (!forceSend) {
+    if (!(tr.hour === 23 && tr.minute >= 59)) return { ok: true, skipped: true };
+    if (lastSent === tr.dateStr) return { ok: true, skipped: true };
+    if (techSlaSendInProgress) return { ok: true, skipped: true };
+  }
+
+  techSlaSendInProgress = true;
+  try {
+    const rawTechDevices = db.prepare(`
+      SELECT d.*, p.full_name as personnel_name, p.team_name as personnel_team, p.phone as personnel_phone, p.email as personnel_email
+      FROM devices d
+      INNER JOIN personnel p ON d.assigned_personnel_id = p.id
+      WHERE d.location_status = 'TEKNİSYENDE' AND p.active = 1
+    `).all();
+
+    const byTech = new Map();
+    for (const raw of rawTechDevices) {
+      const d = { ...raw, ...computeSLA(raw) };
+      if (d.days_remaining <= 10) {
+        if (!byTech.has(d.assigned_personnel_id)) {
+          byTech.set(d.assigned_personnel_id, {
+            name: d.personnel_name,
+            team: d.personnel_team || '-',
+            phone: d.personnel_phone || '',
+            email: d.personnel_email || '',
+            devices: []
+          });
+        }
+        byTech.get(d.assigned_personnel_id).devices.push(d);
+      }
+    }
+
+    const trDateTime = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+    let sentCount = 0;
+
+    for (const [, info] of byTech.entries()) {
+      if (!info.email) continue;
+      info.devices.sort((a, b) => a.days_remaining - b.days_remaining);
+      const exceededCnt = info.devices.filter(d => d.days_remaining <= 0).length;
+      const warnCnt = info.devices.length - exceededCnt;
+
+      const rowsHtml = info.devices.map(d => {
+        const isExc = d.days_remaining <= 0;
+        const slaTxt = isExc ? `SLA AŞILDI (${Math.abs(d.days_remaining)}G Geçti)` : `Son ${d.days_remaining} Gün`;
+        return `
+          <tr>
+            <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-family:Consolas,monospace;font-size:12px;font-weight:700;color:#0f172a;">${xmlEscape(d.serial_no)}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;">
+              <span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700;background:${d.category === 'SOL' ? '#dbeafe' : '#fef3c7'};color:${d.category === 'SOL' ? '#1d4ed8' : '#b45309'};">${xmlEscape(d.category)}</span>
+            </td>
+            <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;color:#0f172a;">${xmlEscape(d.model_name)}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;color:#334155;">${xmlEscape(d.logical_shelf)}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-family:Consolas,monospace;font-size:11px;color:#475569;">${xmlEscape(d.sla_entry_date)}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;">
+              <span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;background:${isExc ? '#fee2e2' : '#fef3c7'};color:${isExc ? '#991b1b' : '#b45309'};">${xmlEscape(slaTxt)}</span>
+            </td>
+          </tr>`;
+      }).join('');
+
+      const htmlBody = `
+      <div style="font-family:'Segoe UI',Arial,sans-serif;background:#f1f5f9;padding:20px;color:#0f172a;">
+        <div style="max-width:740px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #cbd5e1;">
+          <div style="background:#0f172a;padding:20px 24px;border-bottom:4px solid #dc2626;">
+            <div style="font-size:11px;letter-spacing:1.4px;color:#facc15;font-weight:700;text-transform:uppercase;">KARADENİZ EÇM • ÖNCELİKLİ KURULUM (SLA) HATIRLATMASI</div>
+            <div style="font-size:19px;font-weight:800;color:#ffffff;margin-top:4px;">Zimmetinizde SLA Süresi Yaklaşan / Geçmiş ${info.devices.length} Cihaz Var</div>
+            <div style="font-size:12px;color:#cbd5e1;margin-top:4px;">Bildirim Zamanı: ${trDateTime} &nbsp;|&nbsp; SLA Aşıldı: ${exceededCnt} • Kritik (1–10G): ${warnCnt}</div>
+          </div>
+          <div style="padding:20px 24px;">
+            <p style="font-size:14px;line-height:1.6;color:#0f172a;margin:0 0 16px 0;">
+              Sayın <strong>${xmlEscape(info.name)}</strong>, üzerinizde SLA süresi yaklaşmış veya geçmiş olan aşağıdaki <strong>${info.devices.length} adet</strong> cihazı kurulumlarınızda <strong>öncelikli olarak</strong> kullanmanız gerekmektedir:
+            </p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #cbd5e1;">
+              <thead>
+                <tr style="background:#991b1b;color:#ffffff;">
+                  <th style="padding:8px 10px;text-align:left;font-size:11px;">Seri No</th>
+                  <th style="padding:8px 10px;text-align:center;font-size:11px;">Kategori</th>
+                  <th style="padding:8px 10px;text-align:left;font-size:11px;">Model</th>
+                  <th style="padding:8px 10px;text-align:left;font-size:11px;">Statü</th>
+                  <th style="padding:8px 10px;text-align:center;font-size:11px;">Son İşlem</th>
+                  <th style="padding:8px 10px;text-align:center;font-size:11px;">Kalan SLA</th>
+                </tr>
+              </thead>
+              <tbody>${rowsHtml}</tbody>
+            </table>
+          </div>
+          <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:11px 24px;font-size:11px;color:#64748b;text-align:center;">
+            Bu e-posta <strong>KARADENİZ EÇM Depo ve Zimmet Yönetim Sistemi</strong> tarafından her akşam 23:59'da otomatik gönderilmektedir.
+          </div>
+        </div>
+      </div>`;
+
+      const textBody = `Sayın ${info.name}, üzerinizde SLA süresi yaklaşmış veya geçmiş ${info.devices.length} adet cihaz bulunmaktadır: ${info.devices.map(d => `${d.serial_no} (${d.days_remaining}G)`).join(', ')}. Lütfen kurulumlarınızda öncelikli olarak kullanınız.`;
+
+      await dispatchAutoNotification({
+        recipient_name: `${info.name} (TO) | Hasan İlker Kadıoğlu, Servetcan Küçüksolak (CC)`,
+        recipient_phone: info.phone,
+        recipient_email: info.email,
+        recipient_cc: DEFAULT_DISPATCH_REPORT_CC,
+        category: 'TEKNİSYEN_SLA_HATIRLATMA',
+        title: `[KARADENİZ EÇM] Öncelikli Kurulum (SLA) Hatırlatması — ${info.name} (${info.devices.length} Cihaz)`,
+        message: textBody,
+        htmlBody
+      });
+      sentCount++;
+    }
+
+    if (!forceSend) {
+      setSettingValue('last_tech_sla_sent_date', tr.dateStr);
+    }
+    return { ok: true, sent_count: sentCount };
+  } finally {
+    techSlaSendInProgress = false;
+  }
+}
+
+// Background Automatic SLA (23:59 TR), Technician SLA (23:59 TR) & Monday Hourly Vehicle Count Reminder Engine
 function runAutomaticBackgroundChecks() {
   sendSlaExecutiveDashboardReport(false).catch(err => console.error('SLA background check error:', err.message));
+  sendDailyTechnicianSlaEmails(false).catch(err => console.error('Tech SLA background check error:', err.message));
+  sendHourlyVehicleCountReminders(false).catch(err => console.error('Vehicle reminder check error:', err.message));
 }
 
 // ==================== AUTOMATIC ZERO-COST CLOUD DATABASE PERSISTENCE (GOOGLE DRIVE / CLOUD WEBHOOK) ====================
@@ -1564,7 +2258,8 @@ async function handleApi(req, res, urlObj) {
       shipments,
       dispatchHistory,
       notifications,
-      countLogs
+      countLogs,
+      vehicleCountCampaignActive: getSettingValue('vehicle_count_campaign_active', '0') === '1'
     });
   }
 
@@ -2007,7 +2702,7 @@ async function handleApi(req, res, urlObj) {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ONAY_BEKLİYOR', ?)
     `);
 
-    const createdSerials = [];
+    const createdItems = [];
     for (const sn of cleanSerials) {
       const dev = db.prepare(`SELECT * FROM devices WHERE serial_no = ?`).get(sn);
       if (!dev) {
@@ -2040,39 +2735,34 @@ async function handleApi(req, res, urlObj) {
         note || (transfer_type === 'TEKNİSYENDEN_TEKNİSYENE' ? 'Saha Teknisyenler Arası Cihaz Transferi' : 'Kullanılmayan Sağlam Cihaz Depo İadesi'),
         now
       );
-      createdSerials.push(sn);
+      createdItems.push({ ...dev, ...computeSLA(dev), recommended_physical_shelf: recShelf });
     }
 
-    const managersAndDepo = db.prepare(`SELECT * FROM personnel WHERE role IN ('YÖNETİCİ', 'DEPOCU') AND active = 1`).all();
-    const mgmtPhones = managersAndDepo.map(m => m.phone).filter(Boolean);
-    const mgmtEmails = managersAndDepo.map(m => m.email).filter(Boolean);
-
-    const allRecipientNames = [
-      fromPerson.full_name,
-      ...(toPerson ? [toPerson.full_name] : []),
-      'Depo Sorumlusu',
-      'Operasyon Yönetimi'
-    ].join(', ');
-    const allPhones = [...new Set([fromPerson.phone, ...(toPerson ? [toPerson.phone] : []), ...mgmtPhones].filter(Boolean))].join(', ');
-    const allEmails = [...new Set([fromPerson.email, ...(toPerson ? [toPerson.email] : []), ...mgmtEmails].filter(Boolean))].join(', ');
-
-    const targetDesc = transfer_type === 'TEKNİSYENDEN_TEKNİSYENE'
-      ? `${toPerson.full_name} (${toPerson.team_name}) teknisyenine`
-      : `Merkez Depoya (Kullanılmayan Sağlam Cihaz İadesi olarak)`;
-
-    dispatchAutoNotification({
-      recipient_name: allRecipientNames,
-      recipient_phone: allPhones,
-      recipient_email: allEmails,
-      category: 'OTOMATİK_TRANSFER_TALEBİ',
-      title: `Onay Bekleyen Cihaz Transfer Talebi (${createdSerials.length} Cihaz)`,
-      message: `[KARADENİZ EÇM TRANSFER HAVUZU] ${fromPerson.full_name} (${fromPerson.team_name}), üzerinde zimmetli olan ${createdSerials.join(', ')} seri numaralı cihaz(lar)ı ${targetDesc} transfer etmek için havuza gönderdi. Depo Sorumlusu veya Yönetici onayı beklenmektedir.`
+    const emailPkg = buildTransferStatusEmail({
+      stage: 'TALEP',
+      items: createdItems,
+      fromPerson,
+      toPerson,
+      targetShelf: createdItems[0]?.recommended_physical_shelf || '',
+      note: note || ''
     });
 
+    dispatchAutoNotification({
+      recipient_name: emailPkg.recipientName,
+      recipient_phone: toPerson ? toPerson.phone : fromPerson.phone,
+      recipient_email: emailPkg.toEmail,
+      recipient_cc: emailPkg.ccEmail,
+      category: 'OTOMATİK_TRANSFER_TALEBİ',
+      title: emailPkg.subject,
+      message: emailPkg.textBody,
+      htmlBody: emailPkg.htmlBody
+    });
+
+    const createdSerials = createdItems.map(i => i.serial_no);
     return sendJson(res, 200, { ok: true, created_count: createdSerials.length, serials: createdSerials });
   }
 
-  // POST /api/transfers/approve -> Depocu or Yönetici approves transfer requests from pool
+  // POST /api/transfers/approve -> Depocu or Yönetici approves transfer requests from pool & moves zimmet to receiving technician
   if (pathname === '/api/transfers/approve' && method === 'POST') {
     const body = await readBody(req);
     const { transfer_ids = [], resolved_by = 'Depo / Yönetim', physical_shelf_override = null } = body;
@@ -2080,9 +2770,6 @@ async function handleApi(req, res, urlObj) {
 
     const now = new Date().toISOString();
     const approvedList = [];
-    const managersAndDepo = db.prepare(`SELECT * FROM personnel WHERE role IN ('YÖNETİCİ', 'DEPOCU') AND active = 1`).all();
-    const mgmtPhones = managersAndDepo.map(m => m.phone).filter(Boolean).join(', ');
-    const mgmtEmails = managersAndDepo.map(m => m.email).filter(Boolean).join(', ');
 
     for (const id of transfer_ids) {
       const tr = db.prepare(`SELECT * FROM transfer_pool WHERE id = ? AND status = 'ONAY_BEKLİYOR'`).get(id);
@@ -2096,6 +2783,7 @@ async function handleApi(req, res, urlObj) {
         const toPerson = db.prepare(`SELECT * FROM personnel WHERE id = ?`).get(tr.to_personnel_id);
         if (!toPerson) continue;
 
+        // Move device ownership in backend from fromPerson to toPerson
         db.prepare(`
           UPDATE devices
           SET location_status = 'TEKNİSYENDE',
@@ -2105,6 +2793,13 @@ async function handleApi(req, res, urlObj) {
               notes = 'Saha Transferi (' || ? || ' -> ' || ? || ') onaylandı'
           WHERE serial_no = ?
         `).run(toPerson.id, now, tr.from_personnel_name, toPerson.full_name, tr.serial_no);
+
+        // Close old technician's dispatch_history record and open new technician's record
+        db.prepare(`
+          UPDATE dispatch_history
+          SET status_after = 'TRANSFER_EDİLDİ'
+          WHERE serial_no = ? AND personnel_id = ? AND status_after = 'ZİMMETTE'
+        `).run(tr.serial_no, tr.from_personnel_id);
 
         db.prepare(`
           INSERT INTO dispatch_history (serial_no, category, model_name, logical_shelf, from_physical_shelf, personnel_id, personnel_name, team_name, dispatched_by, dispatched_at, dispatch_type, status_after)
@@ -2126,36 +2821,25 @@ async function handleApi(req, res, urlObj) {
           UPDATE transfer_pool SET status = 'ONAYLANDI', resolved_at = ?, resolved_by = ? WHERE id = ?
         `).run(now, resolved_by, id);
 
-        // 1. Notify Giving Technician (Zimmetten Düştü)
-        if (fromPerson) {
-          dispatchAutoNotification({
-            recipient_name: `${fromPerson.full_name} (Devreden Teknisyen)`,
-            recipient_phone: fromPerson.phone,
-            recipient_email: fromPerson.email,
-            category: 'OTOMATİK_TRANSFER_ONAYI',
-            title: `Saha Transferiniz Onaylandı - Zimmetinizden Düştü (${tr.serial_no})`,
-            message: `[KARADENİZ EÇM TRANSFER ONAYI] Sayın ${fromPerson.full_name}, ${tr.serial_no} (${tr.model_name}) cihazının ${toPerson.full_name} (${toPerson.team_name}) teknisyenine yaptığınız saha transferi ${resolved_by} tarafından onaylanmış ve cihaz zimmetinizden düşülmüştür.`
-          });
-        }
-
-        // 2. Notify Receiving Technician (Zimmete Eklendi + SLA Bilgisi)
-        dispatchAutoNotification({
-          recipient_name: `${toPerson.full_name} (Teslim Alan Teknisyen)`,
-          recipient_phone: toPerson.phone,
-          recipient_email: toPerson.email,
-          category: 'OTOMATİK_TRANSFER_ZİMMET',
-          title: `Saha Transferi ile Zimmetinize Cihaz Eklendi (${tr.serial_no})`,
-          message: `[KARADENİZ EÇM YENİ ZİMMET] Sayın ${toPerson.full_name}, ${tr.from_personnel_name} tarafından sahada size devredilen ${tr.serial_no} (${tr.model_name} - Kalan SLA: ${devSla.days_remaining} Gün) cihazının transferi ${resolved_by} tarafından onaylanmış ve zimmetinize kaydedilmiştir.`
+        // Single Corporate HTML Approval Email -> TO: Devralan + Devreden | CC: Hasan İlker Kadıoğlu, Servetcan Küçüksolak
+        const emailPkg = buildTransferStatusEmail({
+          stage: 'ONAYLANDI',
+          items: [{ serial_no: tr.serial_no, category: tr.category, model_name: tr.model_name, days_remaining: devSla.days_remaining }],
+          fromPerson,
+          toPerson,
+          resolvedBy: resolved_by,
+          note: tr.note || ''
         });
 
-        // 3. Notify Depo & Managers
         dispatchAutoNotification({
-          recipient_name: `Operasyon Yönetimi ve Depo Sorumlusu`,
-          recipient_phone: mgmtPhones,
-          recipient_email: mgmtEmails,
-          category: 'OTOMATİK_TRANSFER_RAPORU',
-          title: `Teknisyenler Arası Cihaz Transferi Tamamlandı (${tr.serial_no})`,
-          message: `[KARADENİZ EÇM TRANSFER RAPORU] ${tr.serial_no} (${tr.model_name}) cihazı ${tr.from_personnel_name} zimmetinden düşülerek ${toPerson.full_name} (${toPerson.team_name}) zimmetine aktarılmıştır (Onaylayan: ${resolved_by}).`
+          recipient_name: emailPkg.recipientName,
+          recipient_phone: [toPerson.phone, fromPerson?.phone].filter(Boolean).join(', '),
+          recipient_email: emailPkg.toEmail,
+          recipient_cc: emailPkg.ccEmail,
+          category: 'OTOMATİK_TRANSFER_ONAYI',
+          title: emailPkg.subject,
+          message: emailPkg.textBody,
+          htmlBody: emailPkg.htmlBody
         });
 
         approvedList.push({ serial_no: tr.serial_no, type: tr.transfer_type, target: toPerson.full_name });
@@ -2174,31 +2858,36 @@ async function handleApi(req, res, urlObj) {
         `).run(targetShelf, tr.from_personnel_name, targetShelf, tr.serial_no);
 
         db.prepare(`
+          UPDATE dispatch_history
+          SET status_after = 'DEPOYA_İADE'
+          WHERE serial_no = ? AND personnel_id = ? AND status_after = 'ZİMMETTE'
+        `).run(tr.serial_no, tr.from_personnel_id);
+
+        db.prepare(`
           UPDATE transfer_pool
           SET status = 'ONAYLANDI', recommended_physical_shelf = ?, resolved_at = ?, resolved_by = ?
           WHERE id = ?
         `).run(targetShelf, now, resolved_by, id);
 
-        // 1. Notify Returning Technician (Zimmetten Düştü)
-        if (fromPerson) {
-          dispatchAutoNotification({
-            recipient_name: `${fromPerson.full_name} (İade Eden Teknisyen)`,
-            recipient_phone: fromPerson.phone,
-            recipient_email: fromPerson.email,
-            category: 'OTOMATİK_DEPO_TRANSFER_ONAYI',
-            title: `Depoya Kullanılmayan Cihaz İadeniz Onaylandı (${tr.serial_no})`,
-            message: `[KARADENİZ EÇM DEPO TRANSFER ONAYI] Sayın ${fromPerson.full_name}, kullanmadan depoya teslim ettiğiniz ${tr.serial_no} (${tr.model_name}) cihazı ${resolved_by} tarafından onaylanarak zimmetinizden düşülmüş ve '${targetShelf}' fiziksel rafına alınmıştır.`
-          });
-        }
+        const emailPkg = buildTransferStatusEmail({
+          stage: 'ONAYLANDI',
+          items: [{ serial_no: tr.serial_no, category: tr.category, model_name: tr.model_name, days_remaining: devSla.days_remaining }],
+          fromPerson,
+          toPerson: null,
+          targetShelf,
+          resolvedBy: resolved_by,
+          note: tr.note || ''
+        });
 
-        // 2. Notify Depo & Managers
         dispatchAutoNotification({
-          recipient_name: `Operasyon Yönetimi ve Depo Sorumlusu`,
-          recipient_phone: mgmtPhones,
-          recipient_email: mgmtEmails,
-          category: 'OTOMATİK_DEPO_TRANSFER_RAPORU',
-          title: `Kullanılmayan Cihaz Depo Rafına Alındı (${tr.serial_no} ➔ ${targetShelf})`,
-          message: `[KARADENİZ EÇM DEPO RAPORU] ${tr.from_personnel_name} tarafından kullanılmadan iade edilen ${tr.serial_no} (${tr.model_name}) cihazı ${resolved_by} onayıyla '${targetShelf}' fiziksel rafına yerleştirilmiştir.`
+          recipient_name: emailPkg.recipientName,
+          recipient_phone: fromPerson?.phone || '',
+          recipient_email: emailPkg.toEmail,
+          recipient_cc: emailPkg.ccEmail,
+          category: 'OTOMATİK_DEPO_TRANSFER_ONAYI',
+          title: emailPkg.subject,
+          message: emailPkg.textBody,
+          htmlBody: emailPkg.htmlBody
         });
 
         approvedList.push({ serial_no: tr.serial_no, type: tr.transfer_type, target: targetShelf });
@@ -2222,21 +2911,30 @@ async function handleApi(req, res, urlObj) {
       WHERE id = ?
     `).run(now, resolved_by, reject_reason || 'Onaylanmadı', transfer_id);
 
+    const dev = db.prepare(`SELECT * FROM devices WHERE serial_no = ?`).get(tr.serial_no);
+    const devSla = dev ? computeSLA(dev) : { days_remaining: '-' };
     const fromPerson = db.prepare(`SELECT * FROM personnel WHERE id = ?`).get(tr.from_personnel_id);
     const toPerson = tr.to_personnel_id ? db.prepare(`SELECT * FROM personnel WHERE id = ?`).get(tr.to_personnel_id) : null;
-    const managersAndDepo = db.prepare(`SELECT * FROM personnel WHERE role IN ('YÖNETİCİ', 'DEPOCU') AND active = 1`).all();
 
-    const names = [tr.from_personnel_name, ...(toPerson ? [toPerson.full_name] : []), 'Operasyon Yönetimi'].join(', ');
-    const phones = [...new Set([fromPerson?.phone, toPerson?.phone, ...managersAndDepo.map(m => m.phone)].filter(Boolean))].join(', ');
-    const emails = [...new Set([fromPerson?.email, toPerson?.email, ...managersAndDepo.map(m => m.email)].filter(Boolean))].join(', ');
+    const emailPkg = buildTransferStatusEmail({
+      stage: 'REDDEDİLDİ',
+      items: [{ serial_no: tr.serial_no, category: tr.category, model_name: tr.model_name, days_remaining: devSla.days_remaining }],
+      fromPerson,
+      toPerson,
+      resolvedBy: resolved_by,
+      rejectReason: reject_reason || 'Onaylanmadı',
+      note: tr.note || ''
+    });
 
     dispatchAutoNotification({
-      recipient_name: names,
-      recipient_phone: phones,
-      recipient_email: emails,
+      recipient_name: emailPkg.recipientName,
+      recipient_phone: [toPerson?.phone, fromPerson?.phone].filter(Boolean).join(', '),
+      recipient_email: emailPkg.toEmail,
+      recipient_cc: emailPkg.ccEmail,
       category: 'OTOMATİK_TRANSFER_RED',
-      title: `Cihaz Transfer Talebi Reddedildi (${tr.serial_no})`,
-      message: `[KARADENİZ EÇM TRANSFER RED BİLDİRİMİ] ${tr.serial_no} (${tr.model_name}) cihazı için oluşturulan transfer talebi (${tr.from_personnel_name} ➔ ${tr.to_personnel_name || 'Merkez Depo'}) ${resolved_by} tarafından reddedilmiştir. Cihaz ${tr.from_personnel_name} zimmetinde kalmaya devam etmektedir.`
+      title: emailPkg.subject,
+      message: emailPkg.textBody,
+      htmlBody: emailPkg.htmlBody
     });
 
     return sendJson(res, 200, { ok: true });
@@ -2403,20 +3101,7 @@ async function handleApi(req, res, urlObj) {
       throw err;
     }
 
-    // Grouped notification if any logical shelf changed manually in Turkcell report
-    if (shelfChangedAlerts.length > 0) {
-      const managers = db.prepare(`SELECT * FROM personnel WHERE role IN ('YÖNETİCİ', 'DEPOCU') AND active = 1`).all();
-      const preview = shelfChangedAlerts.slice(0, 10).map(a => `${a.serial_no} (${a.old_logical} -> ${a.new_logical} | Taşı: ${a.recommended_physical_shelf})`).join(', ');
-      const more = shelfChangedAlerts.length > 10 ? ` ve ${shelfChangedAlerts.length - 10} cihaz daha` : '';
-      dispatchAutoNotification({
-        recipient_name: 'Depo Sorumlusu ve Operasyon Yönetimi',
-        recipient_phone: managers.map(m => m.phone).filter(Boolean).join(', '),
-        recipient_email: managers.map(m => m.email).filter(Boolean).join(', '),
-        category: 'OTOMATİK_RAF_UYARISI',
-        title: `Turkcell Sisteminde Raf Değişikliği Algılandı (${shelfChangedAlerts.length} Cihaz)`,
-        message: `${category} stok raporu eşleştirmesinde ${shelfChangedAlerts.length} cihazın Turkcell raf statüsünün değiştiği tespit edildi: ${preview}${more}. Lütfen ilgili cihazların fiziksel raflarını güncelleyiniz.`
-      });
-    }
+    // Raf değişiklikleri yalnızca ekran içi uyarı (1. Sekme ve 2. Sekme) olarak gösterilir; mail gönderilmez.
 
     runAutomaticBackgroundChecks();
 
@@ -2527,26 +3212,58 @@ async function handleApi(req, res, urlObj) {
     `).run(String(personnel_id), person.full_name, expectedSet.size, scannedSet.size, [...scannedSet].join(', '), missing.join(', '), extra.join(', '), missing.length === 0 ? 'TAM' : 'EKSİK_VAR', now);
 
     if (missing.length > 0) {
-      dispatchAutoNotification({
-        recipient_name: `${person.full_name}, Depo Sorumlusu ve Operasyon Yönetimi`,
-        recipient_phone: `${person.phone}, 905325556677, 905326667788`,
-        recipient_email: `${person.email}, depo@karadenzecm.com, yonetim@karadenzecm.com`,
-        category: 'OTOMATİK_SAYIM_ALARMI',
-        title: `Haftalık Araç Sayımı Eksik Cihaz Uyarısı (${person.full_name})`,
-        message: `${person.full_name} tarafından yapılan haftalık araç sayımında zimmette kayıtlı olan şu ${missing.length} adet seri numarası okutulmamıştır: ${missing.join(', ')}.`
-      });
-    } else {
-      dispatchAutoNotification({
-        recipient_name: `${person.full_name} ve Depo Yönetimi`,
-        recipient_phone: person.phone,
-        recipient_email: `${person.email}, depo@karadenzecm.com`,
-        category: 'OTOMATİK_SAYIM_ONAYI',
-        title: `Haftalık Araç Sayımı Tamamlandı (${person.full_name})`,
-        message: `Sayın ${person.full_name}, haftalık araç içi cihaz sayımınız eksiksiz (${expectedSet.size}/${expectedSet.size} cihaz) olarak doğrulanmıştır.`
-      });
+      const missingDevices = assignedDevices.filter(d => missing.includes(d.serial_no.toUpperCase()));
+      sendTechnicianVehicleMissingEmail(person, missingDevices, expectedSet.size, scannedSet.size);
+    }
+    // Eksiksiz (missing.length === 0) çıktığında bireysel mail gönderilmez!
+
+    // Check if ALL technicians with assigned devices have now finished their weekly vehicle count
+    const remainingPending = getPendingVehicleCountTechnicians();
+    let allCompletedReportSent = false;
+    if (remainingPending.length === 0 && getSettingValue('vehicle_count_campaign_active', '0') === '1') {
+      setSettingValue('vehicle_count_campaign_active', '0');
+      await sendAllVehicleCountsFinalReport();
+      allCompletedReportSent = true;
     }
 
-    return sendJson(res, 200, { ok: true, expected_count: expectedSet.size, scanned_count: scannedSet.size, missing, extra, status });
+    return sendJson(res, 200, {
+      ok: true,
+      expected_count: expectedSet.size,
+      scanned_count: scannedSet.size,
+      missing,
+      extra,
+      status,
+      all_completed_report_sent: allCompletedReportSent
+    });
+  }
+
+  // POST /api/counts/vehicle-campaign/start -> Starts weekly vehicle count & hourly reminders
+  if (pathname === '/api/counts/vehicle-campaign/start' && method === 'POST') {
+    const body = await readBody(req);
+    if (body.user_role !== 'YÖNETİCİ' && body.user_role !== 'DEPOCU') {
+      return sendJson(res, 403, { error: 'Yetki Hatası.' });
+    }
+    db.prepare(`
+      UPDATE personnel
+      SET vehicle_count_status = 'BEKLİYOR'
+      WHERE role = 'TEKNİSYEN' AND active = 1
+        AND id IN (SELECT DISTINCT assigned_personnel_id FROM devices WHERE location_status = 'TEKNİSYENDE' AND assigned_personnel_id IS NOT NULL)
+    `).run();
+    setSettingValue('vehicle_count_campaign_active', '1');
+    const remRes = await sendHourlyVehicleCountReminders(true);
+    return sendJson(res, 200, { ok: true, pending_count: remRes.sent_count || 0 });
+  }
+
+  // POST /api/counts/vehicle-campaign/stop -> Stops hourly reminders
+  if (pathname === '/api/counts/vehicle-campaign/stop' && method === 'POST') {
+    setSettingValue('vehicle_count_campaign_active', '0');
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // POST /api/counts/vehicle-campaign/send-final -> Sends full vehicle count final report + Excel on demand
+  if (pathname === '/api/counts/vehicle-campaign/send-final' && method === 'POST') {
+    const resMail = await sendAllVehicleCountsFinalReport();
+    return sendJson(res, 200, { ok: resMail.mail_sent, error: resMail.error });
   }
 
   // POST /api/counts/shelf
@@ -2634,16 +3351,17 @@ async function handleApi(req, res, urlObj) {
       VALUES ('AYLIK_DEPO_RAF', ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(shelf_code, `${shelf_code} (${shelf.target_logical_shelf})`, expectedCount, actualCount, scannedText, missingText, extraText, status, now);
 
-    if (hasDiscrepancy) {
-      dispatchAutoNotification({
-        recipient_name: 'Operasyon Yönetimi ve Depo Sorumlusu',
-        recipient_phone: '905326667788, 905325556677',
-        recipient_email: 'yonetim@karadenzecm.com, depo@karadenzecm.com',
-        category: 'OTOMATİK_DEPO_SAYIM_FARKI',
-        title: `Depo Raf Sayım Fark Raporu: ${shelf_code}`,
-        message: `[KARADENİZ EÇM DEPO SAYIM FARKI] ${shelf_code} rafında sistemde ${expectedCount} adet kayıtlı iken fiziksel sayımda ${actualCount} adet tespit edilmiştir. Rafta Bulunmayan (Eksik) Seriler: ${missingText || 'Yok'} | Raftan Fazla/Yanlış Çıkan Seriler: ${extraText || 'Yok'}.`
-      });
-    }
+    // Depo sayım sonucu (TAM veya FARK_VAR) direkt olarak Hasan İlker Kadıoğlu (TO) ve CC listesine detaylı Excel ekiyle gider!
+    sendWarehouseShelfCountReportEmail({
+      shelf,
+      expectedCount,
+      actualCount,
+      status,
+      shelfDevices,
+      matchedSerials,
+      missingSerials,
+      extraSerials
+    });
 
     return sendJson(res, 200, {
       ok: true,
