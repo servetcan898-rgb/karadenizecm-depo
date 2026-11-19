@@ -218,9 +218,9 @@ async function dispatchAutoNotification({ recipient_name, recipient_phone, recip
     VALUES (?, ?, ?, 'OTOMATİK WHATSAPP + E-POSTA', ?, ?, ?, 1, ?)
   `).run(recipient_name, recipient_phone || '', recipient_email || '', category, title, message, now);
 
-  // If external WhatsApp Webhook or Email Webhook is configured in gateway_settings, fire HTTP POST automatically
+  // If external WhatsApp Webhook or Email Webhook is configured in gateway_settings or env, fire HTTP POST automatically
   try {
-    const waWebhook = db.prepare(`SELECT value FROM gateway_settings WHERE key = 'whatsapp_webhook_url'`).get()?.value;
+    const waWebhook = db.prepare(`SELECT value FROM gateway_settings WHERE key = 'whatsapp_webhook_url'`).get()?.value || process.env.WHATSAPP_WEBHOOK_URL;
     if (waWebhook && recipient_phone) {
       fetch(waWebhook, {
         method: 'POST',
@@ -228,7 +228,7 @@ async function dispatchAutoNotification({ recipient_name, recipient_phone, recip
         body: JSON.stringify({ phone: recipient_phone, title, message })
       }).catch(() => {});
     }
-    const mailWebhook = db.prepare(`SELECT value FROM gateway_settings WHERE key = 'email_webhook_url'`).get()?.value;
+    const mailWebhook = db.prepare(`SELECT value FROM gateway_settings WHERE key = 'email_webhook_url'`).get()?.value || process.env.CLOUD_DB_URL;
     if (mailWebhook && recipient_email) {
       fetch(mailWebhook, {
         method: 'POST',
@@ -239,11 +239,10 @@ async function dispatchAutoNotification({ recipient_name, recipient_phone, recip
   } catch (_) {}
 }
 
-// Background Automatic SLA & Count Escalation Engine (Runs automatically without any button click!)
+// Background Automatic SLA & Count Escalation Engine (Runs automatically without any button click, grouped to prevent spam!)
 function runAutomaticBackgroundChecks() {
   const todayStr = new Date().toISOString().split('T')[0];
 
-  // 1. Automatic SLA Check: Any active device with <= 10 days remaining that hasn't been notified today
   const rawDevices = db.prepare(`
     SELECT d.*, p.full_name as personnel_name, p.phone as personnel_phone, p.email as personnel_email
     FROM devices d
@@ -255,25 +254,68 @@ function runAutomaticBackgroundChecks() {
   const managerPhones = managers.map(m => m.phone).filter(Boolean).join(', ');
   const managerEmails = managers.map(m => m.email).filter(Boolean).join(', ');
 
+  const warehouseCritical = [];
+  const techCriticalMap = new Map(); // personnel_id -> { name, phone, email, devices: [] }
+  const notifiedIds = [];
+
   for (const raw of rawDevices) {
     const d = { ...raw, ...computeSLA(raw) };
     if (d.days_remaining <= 10 && d.last_sla_notified_date !== todayStr) {
-      const targetName = d.personnel_name
-        ? `${d.personnel_name} (Teknisyen) ve Operasyon Yönetimi`
-        : `Depo Sorumlusu ve Operasyon Yönetimi`;
-      const targetPhone = d.personnel_phone ? `${d.personnel_phone}, ${managerPhones}` : managerPhones;
-      const targetEmail = d.personnel_email ? `${d.personnel_email}, ${managerEmails}` : managerEmails;
+      notifiedIds.push(d.id);
+      if (d.location_status === 'TEKNİSYENDE' && d.assigned_personnel_id) {
+        if (!techCriticalMap.has(d.assigned_personnel_id)) {
+          techCriticalMap.set(d.assigned_personnel_id, {
+            name: d.personnel_name || 'Teknisyen',
+            phone: d.personnel_phone || '',
+            email: d.personnel_email || '',
+            devices: []
+          });
+        }
+        techCriticalMap.get(d.assigned_personnel_id).devices.push(d);
+      } else {
+        warehouseCritical.push(d);
+      }
+    }
+  }
 
-      dispatchAutoNotification({
-        recipient_name: targetName,
-        recipient_phone: targetPhone,
-        recipient_email: targetEmail,
-        category: 'OTOMATİK_SLA_ALARMI',
-        title: `SLA Süresi Kritik Eşikte: ${d.serial_no} (Kalan: ${d.days_remaining} Gün)`,
-        message: `[KARADENİZ EÇM OTOMATİK SLA UYARISI] '${d.logical_shelf}' statüsündeki ${d.serial_no} (${d.model_name}) cihazı ${d.days_elapsed} gündür stoktadır. SLA süresinin dolmasına ${d.days_remaining} gün kalmıştır. Mevcut Konum: ${d.physical_shelf_code || d.personnel_name}. İvedilikle sahada kullandırılması veya iade sürecine alınması gerekmektedir.`
-      });
+  // 1. Single grouped summary notification for Warehouse critical SLA devices
+  if (warehouseCritical.length > 0) {
+    const preview = warehouseCritical.slice(0, 10).map(d => `${d.serial_no} (${d.logical_shelf} / Kalan: ${d.days_remaining}G)`).join(', ');
+    const moreText = warehouseCritical.length > 10 ? ` ve ${warehouseCritical.length - 10} cihaz daha` : '';
+    dispatchAutoNotification({
+      recipient_name: 'Depo Sorumlusu ve Operasyon Yönetimi',
+      recipient_phone: managerPhones,
+      recipient_email: managerEmails,
+      category: 'OTOMATİK_SLA_ALARMI',
+      title: `Depo Kritik SLA Özeti (${warehouseCritical.length} Cihaz ≤ 10 Gün)`,
+      message: `[KARADENİZ EÇM OTOMATİK SLA UYARISI] Depo raflarında SLA süresinin dolmasına 10 gün veya daha az kalmış toplam ${warehouseCritical.length} adet cihaz bulunmaktadır. Öncelikli cihazlar: ${preview}${moreText}.`
+    });
+  }
 
-      db.prepare(`UPDATE devices SET last_sla_notified_date = ? WHERE id = ?`).run(todayStr, d.id);
+  // 2. Per-technician grouped SLA notification
+  for (const [, info] of techCriticalMap.entries()) {
+    const listText = info.devices.map(d => `${d.serial_no} (${d.model_name} - Kalan: ${d.days_remaining}G)`).join(', ');
+    dispatchAutoNotification({
+      recipient_name: `${info.name} (Teknisyen) ve Operasyon Yönetimi`,
+      recipient_phone: `${info.phone}, ${managerPhones}`,
+      recipient_email: `${info.email}, ${managerEmails}`,
+      category: 'OTOMATİK_SLA_ALARMI',
+      title: `Zimmetinizde SLA Süresi Dolan ${info.devices.length} Cihaz Var (${info.name})`,
+      message: `[KARADENİZ EÇM SLA UYARISI] Sayın ${info.name}, zimmetinizde SLA süresinin dolmasına 10 gün veya daha az kalmış ${info.devices.length} cihaz bulunmaktadır: ${listText}. Lütfen öncelikli olarak sahada kullandırınız.`
+    });
+  }
+
+  // Mark all notified in a single fast transaction
+  if (notifiedIds.length > 0) {
+    db.exec('BEGIN TRANSACTION');
+    try {
+      const upd = db.prepare(`UPDATE devices SET last_sla_notified_date = ? WHERE id = ?`);
+      for (const id of notifiedIds) {
+        upd.run(todayStr, id);
+      }
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
     }
   }
 }
@@ -532,7 +574,7 @@ function readBody(req) {
     let data = '';
     req.on('data', chunk => {
       data += chunk;
-      if (data.length > 20 * 1024 * 1024) reject(new Error('Veri boyutu çok yüksek'));
+      if (data.length > 50 * 1024 * 1024) reject(new Error('Veri boyutu çok yüksek'));
     });
     req.on('end', () => {
       if (!data) return resolve({});
@@ -1458,11 +1500,20 @@ async function handleApi(req, res, urlObj) {
     return sendJson(res, 200, { ok: true, approvedItems });
   }
 
-  // POST /api/reports/sync-turkcell
+  // POST /api/reports/sync-turkcell (Fast Transactional Sync for 5000+ devices from Depo Sol.xlsx & Depo Tsd.xlsx)
   if (pathname === '/api/reports/sync-turkcell' && method === 'POST') {
     const body = await readBody(req);
     const { category = 'SOL', rows = [] } = body;
     if (!rows.length) return sendJson(res, 400, { error: 'Raporda satır bulunamadı.' });
+
+    const normalizeLogicalShelf = (val) => {
+      const s = String(val || 'SAĞLAM').trim().toUpperCase()
+        .replace(/Ğ/g, 'G').replace(/İ/g, 'I').replace(/Ö/g, 'O').replace(/Ü/g, 'U').replace(/Ş/g, 'S').replace(/Ç/g, 'C');
+      if (s.includes('ARIZA')) return 'ARIZA';
+      if (s.includes('KARANTINA')) return 'KARANTİNA';
+      if (s.includes('DONEN')) return 'SAĞLAM DÖNEN';
+      return 'SAĞLAM';
+    };
 
     const now = new Date().toISOString();
     const reportSerials = new Set();
@@ -1474,86 +1525,116 @@ async function handleApi(req, res, urlObj) {
       WHERE d.category = ? AND (d.location_status = 'DEPODA' OR d.location_status = 'TEKNİSYENDE')
     `).all(category);
 
-    const existingMap = new Map(existingCategoryDevices.map(d => [d.serial_no, d]));
+    const existingMap = new Map(existingCategoryDevices.map(d => [d.serial_no.toUpperCase(), d]));
     const installedDropped = [];
     const shelfChangedAlerts = [];
     const newlyDiscovered = [];
 
-    for (const r of rows) {
-      const sn = (r.serial_no || '').trim().toUpperCase();
-      if (!sn) continue;
-      reportSerials.add(sn);
+    // Precompute recommended physical shelves per logical shelf for fast lookup
+    const defaultShelfMap = {
+      'SAĞLAM': recommendPhysicalShelf(category, 'SAĞLAM'),
+      'SAĞLAM DÖNEN': recommendPhysicalShelf(category, 'SAĞLAM DÖNEN'),
+      'KARANTİNA': recommendPhysicalShelf(category, 'KARANTİNA'),
+      'ARIZA': recommendPhysicalShelf(category, 'ARIZA')
+    };
 
-      const incomingShelf = (r.logical_shelf || 'SAĞLAM').trim().toUpperCase();
-      const maxDays = (incomingShelf === 'KARANTİNA' || incomingShelf === 'ARIZA') ? 30 : 90;
-      const entryDate = r.sla_entry_date || new Date().toISOString().split('T')[0];
+    const stmtUpdateMismatch = db.prepare(`
+      UPDATE devices
+      SET previous_logical_shelf = ?, logical_shelf = ?, shelf_mismatch_alert = 1,
+          recommended_new_physical_shelf = ?, sla_max_days = ?, sla_entry_date = ?, last_report_seen_at = ?
+      WHERE serial_no = ?
+    `);
+    const stmtUpdateSeen = db.prepare(`
+      UPDATE devices SET last_report_seen_at = ?, sla_entry_date = ? WHERE serial_no = ?
+    `);
+    const stmtInsertNew = db.prepare(`
+      INSERT INTO devices (serial_no, category, model_name, logical_shelf, previous_logical_shelf, physical_shelf_code, location_status, sla_entry_date, sla_max_days, last_report_seen_at, notes)
+      VALUES (?, ?, ?, ?, ?, ?, 'DEPODA', ?, ?, ?, ?)
+      ON CONFLICT(serial_no) DO UPDATE SET
+        model_name = excluded.model_name,
+        logical_shelf = excluded.logical_shelf,
+        sla_entry_date = excluded.sla_entry_date,
+        sla_max_days = excluded.sla_max_days,
+        location_status = 'DEPODA',
+        last_report_seen_at = excluded.last_report_seen_at
+    `);
+    const stmtDropInstalled = db.prepare(`
+      UPDATE devices SET location_status = 'MÜŞTERİYE_KURULDU', physical_shelf_code = NULL, notes = ? WHERE serial_no = ?
+    `);
+    const stmtUpdateHist = db.prepare(`
+      UPDATE dispatch_history SET status_after = 'MÜŞTERİYE_KURULDU' WHERE serial_no = ?
+    `);
 
-      const existing = existingMap.get(sn);
-      if (existing) {
-        if (existing.logical_shelf !== incomingShelf) {
-          const recNewShelf = recommendPhysicalShelf(category, incomingShelf);
-          db.prepare(`
-            UPDATE devices
-            SET previous_logical_shelf = ?, logical_shelf = ?, shelf_mismatch_alert = 1,
-                recommended_new_physical_shelf = ?, sla_max_days = ?, last_report_seen_at = ?
-            WHERE serial_no = ?
-          `).run(existing.logical_shelf, incomingShelf, recNewShelf, maxDays, now, sn);
+    db.exec('BEGIN TRANSACTION');
+    try {
+      for (const r of rows) {
+        const sn = String(r.serial_no || '').trim().toUpperCase();
+        if (!sn) continue;
+        reportSerials.add(sn);
 
-          shelfChangedAlerts.push({
-            serial_no: sn,
-            old_logical: existing.logical_shelf,
-            new_logical: incomingShelf,
-            current_physical_shelf: existing.physical_shelf_code || 'TEKNİSYENDE',
-            recommended_physical_shelf: recNewShelf
-          });
+        const incomingShelf = normalizeLogicalShelf(r.logical_shelf);
+        const maxDays = (incomingShelf === 'KARANTİNA' || incomingShelf === 'ARIZA') ? 30 : 90;
+        const entryDate = r.sla_entry_date || new Date().toISOString().split('T')[0];
+        const noteDetail = r.last_action_time ? `Son İşlem: ${r.last_action_time}` : 'Stok Raporundan Güncellendi';
 
-          dispatchAutoNotification({
-            recipient_name: 'Depo Sorumlusu ve Operasyon Yönetimi',
-            recipient_phone: '905325556677, 905326667788',
-            recipient_email: 'depo@karadenzecm.com, yonetim@karadenzecm.com',
-            category: 'OTOMATİK_RAF_UYARISI',
-            title: `Turkcell Sisteminde Manuel Raf Değişikliği: ${sn}`,
-            message: `${sn} seri numaralı cihaz önceki raporda '${existing.logical_shelf}' iken yeni yüklenen Turkcell raporunda '${incomingShelf}' rafına geçmiştir. SLA hatası ve fiziksel raf karışıklığı olmaması için cihazı '${existing.physical_shelf_code || 'Mevcut Konumu'}' rafından '${recNewShelf}' fiziksel rafına taşıyınız.`
-          });
+        const existing = existingMap.get(sn);
+        if (existing) {
+          if (existing.logical_shelf !== incomingShelf) {
+            const recNewShelf = defaultShelfMap[incomingShelf];
+            stmtUpdateMismatch.run(existing.logical_shelf, incomingShelf, recNewShelf, maxDays, entryDate, now, sn);
+            shelfChangedAlerts.push({
+              serial_no: sn,
+              old_logical: existing.logical_shelf,
+              new_logical: incomingShelf,
+              current_physical_shelf: existing.physical_shelf_code || 'TEKNİSYENDE',
+              recommended_physical_shelf: recNewShelf
+            });
+          } else {
+            stmtUpdateSeen.run(now, entryDate, sn);
+          }
         } else {
-          db.prepare(`UPDATE devices SET last_report_seen_at = ? WHERE serial_no = ?`).run(now, sn);
+          const recShelf = defaultShelfMap[incomingShelf];
+          stmtInsertNew.run(sn, category, r.model_name || `${category} Cihaz`, incomingShelf, incomingShelf, recShelf, entryDate, maxDays, now, noteDetail);
+          newlyDiscovered.push({ serial_no: sn, logical_shelf: incomingShelf, assigned_shelf: recShelf });
         }
-      } else {
-        const recShelf = recommendPhysicalShelf(category, incomingShelf);
-        db.prepare(`
-          INSERT INTO devices (serial_no, category, model_name, logical_shelf, previous_logical_shelf, physical_shelf_code, location_status, sla_entry_date, sla_max_days, last_report_seen_at, notes)
-          VALUES (?, ?, ?, ?, ?, ?, 'DEPODA', ?, ?, ?, 'Turkcell Stok Raporundan Eklendi')
-          ON CONFLICT(serial_no) DO UPDATE SET
-            logical_shelf = excluded.logical_shelf,
-            location_status = 'DEPODA',
-            last_report_seen_at = excluded.last_report_seen_at
-        `).run(sn, category, r.model_name || `${category} Cihaz`, incomingShelf, incomingShelf, recShelf, entryDate, maxDays, now);
-        newlyDiscovered.push({ serial_no: sn, logical_shelf: incomingShelf, assigned_shelf: recShelf });
       }
+
+      for (const existing of existingCategoryDevices) {
+        if (!reportSerials.has(existing.serial_no.toUpperCase())) {
+          const noteText = existing.location_status === 'TEKNİSYENDE'
+            ? `Turkcell raporundan düştü -> ${existing.tech_name || 'Teknisyen'} zimmetinden otomatik düşüldü (Müşteriye Kuruldu).`
+            : `Turkcell raporundan düştü -> Stoktan otomatik düşüldü.`;
+
+          stmtDropInstalled.run(noteText, existing.serial_no);
+          stmtUpdateHist.run(existing.serial_no);
+
+          installedDropped.push({
+            serial_no: existing.serial_no,
+            model_name: existing.model_name,
+            technician: existing.tech_name || 'Depo Çıkışı'
+          });
+        }
+      }
+
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
     }
 
-    for (const existing of existingCategoryDevices) {
-      if (!reportSerials.has(existing.serial_no)) {
-        const noteText = existing.location_status === 'TEKNİSYENDE'
-          ? `Turkcell raporundan düştü -> ${existing.tech_name || 'Teknisyen'} zimmetinden otomatik düşüldü (Müşteriye Kuruldu).`
-          : `Turkcell raporundan düştü -> Stoktan otomatik düşüldü.`;
-
-        db.prepare(`
-          UPDATE devices
-          SET location_status = 'MÜŞTERİYE_KURULDU', physical_shelf_code = NULL, notes = ?
-          WHERE serial_no = ?
-        `).run(noteText, existing.serial_no);
-
-        db.prepare(`
-          UPDATE dispatch_history SET status_after = 'MÜŞTERİYE_KURULDU' WHERE serial_no = ?
-        `).run(existing.serial_no);
-
-        installedDropped.push({
-          serial_no: existing.serial_no,
-          model_name: existing.model_name,
-          technician: existing.tech_name || 'Depo Çıkışı'
-        });
-      }
+    // Grouped notification if any logical shelf changed manually in Turkcell report
+    if (shelfChangedAlerts.length > 0) {
+      const managers = db.prepare(`SELECT * FROM personnel WHERE role IN ('YÖNETİCİ', 'DEPOCU') AND active = 1`).all();
+      const preview = shelfChangedAlerts.slice(0, 10).map(a => `${a.serial_no} (${a.old_logical} -> ${a.new_logical} | Taşı: ${a.recommended_physical_shelf})`).join(', ');
+      const more = shelfChangedAlerts.length > 10 ? ` ve ${shelfChangedAlerts.length - 10} cihaz daha` : '';
+      dispatchAutoNotification({
+        recipient_name: 'Depo Sorumlusu ve Operasyon Yönetimi',
+        recipient_phone: managers.map(m => m.phone).filter(Boolean).join(', '),
+        recipient_email: managers.map(m => m.email).filter(Boolean).join(', '),
+        category: 'OTOMATİK_RAF_UYARISI',
+        title: `Turkcell Sisteminde Raf Değişikliği Algılandı (${shelfChangedAlerts.length} Cihaz)`,
+        message: `${category} stok raporu eşleştirmesinde ${shelfChangedAlerts.length} cihazın Turkcell raf statüsünün değiştiği tespit edildi: ${preview}${more}. Lütfen ilgili cihazların fiziksel raflarını güncelleyiniz.`
+      });
     }
 
     runAutomaticBackgroundChecks();
@@ -1564,18 +1645,18 @@ async function handleApi(req, res, urlObj) {
       total_in_report: reportSerials.size,
       installedDropped,
       shelfChangedAlerts,
-      newlyDiscovered
+      newlyDiscoveredCount: newlyDiscovered.length
     });
   }
 
-  // POST /api/personnel/import (ONLY YÖNETİCİ ALLOWED!)
+  // POST /api/personnel/import (ONLY YÖNETİCİ ALLOWED - Supports Bys Rapor.xlsx & deactivates non-active/non-operational staff!)
   if (pathname === '/api/personnel/import' && method === 'POST') {
     const body = await readBody(req);
-    const { user_role, rows = [] } = body;
+    const { user_role, rows = [], deactivate_missing = false } = body;
     if (user_role !== 'YÖNETİCİ') {
       return sendJson(res, 403, { error: 'Yetki Hatası: BYS personel ekleme ve güncelleme işlemi yalnızca YÖNETİCİ rolü tarafından yapılabilir.' });
     }
-    if (!rows.length) return sendJson(res, 400, { error: 'Personel listesi boş.' });
+    if (!rows.length) return sendJson(res, 400, { error: 'Aktarılacak aktif operasyon personeli bulunamadı.' });
 
     const upsert = db.prepare(`
       INSERT INTO personnel (employee_code, username, password, full_name, team_name, role, phone, email, active)
@@ -1590,24 +1671,51 @@ async function handleApi(req, res, urlObj) {
         active = 1
     `);
 
+    const importedCodes = new Set();
     let count = 0;
-    for (const r of rows) {
-      if (!r.full_name) continue;
-      const code = (r.employee_code || `BYS-${Math.floor(1000 + Math.random() * 9000)}`).trim();
-      const uname = (r.username || code.toLowerCase()).trim();
-      const pwd = (r.password || '123456').trim();
-      upsert.run(
-        code,
-        uname,
-        pwd,
-        r.full_name.trim(),
-        (r.team_name || 'Saha Ekibi').trim(),
-        (r.role || 'TEKNİSYEN').trim().toUpperCase(),
-        (r.phone || '').trim(),
-        (r.email || '').trim()
-      );
-      count++;
+
+    db.exec('BEGIN TRANSACTION');
+    try {
+      for (const r of rows) {
+        if (!r.full_name) continue;
+        const code = String(r.employee_code || `BYS-${Math.floor(1000 + Math.random() * 9000)}`).trim();
+        const uname = String(r.username || code.toLowerCase()).trim();
+        const pwd = String(r.password || '123456').trim();
+        let phone = String(r.phone || '').replace(/[^0-9]/g, '');
+        if (phone.length === 10 && phone.startsWith('5')) phone = '90' + phone;
+
+        upsert.run(
+          code,
+          uname,
+          pwd,
+          String(r.full_name).trim(),
+          String(r.team_name || 'Saha Ekibi').trim(),
+          String(r.role || 'TEKNİSYEN').trim().toUpperCase(),
+          phone,
+          String(r.email || '').trim()
+        );
+        importedCodes.add(code);
+        count++;
+      }
+
+      if (deactivate_missing) {
+        const allStaff = db.prepare(`SELECT id, employee_code, username FROM personnel`).all();
+        const deact = db.prepare(`UPDATE personnel SET active = 0 WHERE id = ?`);
+        for (const st of allStaff) {
+          // Keep the main default admin account active so manager is never locked out
+          if (st.username === 'yonetici') continue;
+          if (!importedCodes.has(st.employee_code)) {
+            deact.run(st.id);
+          }
+        }
+      }
+
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
     }
+
     return sendJson(res, 200, { ok: true, imported_count: count });
   }
 
