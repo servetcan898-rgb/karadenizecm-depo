@@ -1276,10 +1276,21 @@ function doPost(e) {
     else { DriveApp.createFile(DB_FILE_NAME, jsonStr, MimeType.PLAIN_TEXT); }
     return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
   }
-  var emails = (data.to || "").split(",").map(function(s){ return s.trim(); }).filter(Boolean);
-  emails.forEach(function(mail) {
-    MailApp.sendEmail({ to: mail, subject: data.subject, body: data.text });
-  });
+  var mailOpts = {
+    to: data.to || "",
+    subject: data.subject || "Karadeniz ECM Bildirim",
+    body: data.text || ""
+  };
+  if (data.cc) mailOpts.cc = data.cc;
+  if (data.htmlBody) mailOpts.htmlBody = data.htmlBody;
+  if (data.attachment && data.attachment.base64) {
+    var bytes = Utilities.base64Decode(data.attachment.base64);
+    var blob = Utilities.newBlob(bytes, data.attachment.mimeType, data.attachment.filename);
+    mailOpts.attachments = [blob];
+  }
+  if (mailOpts.to) {
+    MailApp.sendEmail(mailOpts);
+  }
   return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
 }</pre>
         </div>
@@ -1300,6 +1311,36 @@ function doPost(e) {
             <button onclick="sendTestGatewayNotification()" class="px-3.5 py-2 rounded-lg subcard hover:border-yellow-500/50 text-main text-xs font-semibold transition">
               Test Gönder
             </button>
+          </div>
+        </div>
+
+        <!-- #1 Executive SLA Dashboard Email Settings -->
+        <div class="subcard p-4 space-y-3 border-l-4 border-red-500">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 class="text-xs font-bold text-main">1. Günlük Kritik SLA Dashboard Raporu (HTML Dashboard + 4 Sekmeli Excel Ekli)</h3>
+              <p class="text-[11px] text-mute">
+                Depo (SOL / TURKCELL, Sağlam / Sağlam Dönen / Karantina / Arıza) ve Teknisyen bazlı kritik SLA özetini + 4 sekmeli Excel ekini otomatik gönderir.
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <button onclick="downloadSlaDashboardExcel()" class="px-3 py-1.5 rounded-lg card hover:border-sky-500/50 text-sky-500 text-xs font-bold transition">
+                4 Sekmeli Excel İndir (.xlsx)
+              </button>
+              <button onclick="sendSlaDashboardEmailNow()" class="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition shadow">
+                SLA Dashboard Mailini Şimdi Gönder
+              </button>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label class="text-[11px] text-mute block mb-1 font-semibold">TO (Kime — Depo Sorumlusu)</label>
+              <input id="gw-sla-to" type="text" placeholder="hasan.kadioglu@bireysel.superonline.net" class="theme-input w-full px-3 py-2 text-xs font-mono" />
+            </div>
+            <div>
+              <label class="text-[11px] text-mute block mb-1 font-semibold">CC (Bilgi — Virgülle Ayırarak)</label>
+              <input id="gw-sla-cc" type="text" placeholder="dogancan.aksoy@guraks.com.tr, mehmet.celep@sam.superonline.net, servetcan.kucuksolak@sam.superonline.net" class="theme-input w-full px-3 py-2 text-xs font-mono" />
+            </div>
           </div>
         </div>
       </div>

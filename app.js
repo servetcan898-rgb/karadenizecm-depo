@@ -1090,15 +1090,26 @@ function getFilteredInventoryDevices() {
 let INVENTORY_RENDER_LIMIT = 150;
 let PENDING_TURKCELL_SYNC_ROWS = null;
 
-// Parse Excel serial date-time (e.g. 46318.6783680556) or string date-time into { isoDate, displayDateTime }
+// Parse Excel serial date-time (e.g. 46318.6783680556), Date object, or string date-time into { isoDate, displayDateTime }
 function parseExcelDateValue(rawVal) {
   if (rawVal === null || rawVal === undefined || rawVal === '') {
     const today = new Date().toISOString().split('T')[0];
     return { isoDate: today, displayDateTime: today };
   }
-  if (typeof rawVal === 'number' && rawVal > 20000) {
+  if (rawVal instanceof Date && !isNaN(rawVal.getTime())) {
+    const yyyy = rawVal.getFullYear();
+    const mm = String(rawVal.getMonth() + 1).padStart(2, '0');
+    const dd = String(rawVal.getDate()).padStart(2, '0');
+    const hh = String(rawVal.getHours()).padStart(2, '0');
+    const mi = String(rawVal.getMinutes()).padStart(2, '0');
+    return { isoDate: `${yyyy}-${mm}-${dd}`, displayDateTime: `${dd}.${mm}.${yyyy} ${hh}:${mi}` };
+  }
+  const numVal = typeof rawVal === 'number'
+    ? rawVal
+    : (/^\d{5}(\.\d+)?$/.test(String(rawVal).trim()) ? Number(String(rawVal).trim()) : NaN);
+  if (!isNaN(numVal) && numVal > 20000) {
     // Excel epoch (1899-12-30 UTC)
-    const utcMs = Math.round((rawVal - 25569) * 86400 * 1000);
+    const utcMs = Math.round((numVal - 25569) * 86400 * 1000);
     const dt = new Date(utcMs);
     const yyyy = dt.getUTCFullYear();
     const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
@@ -1108,8 +1119,8 @@ function parseExcelDateValue(rawVal) {
     return { isoDate: `${yyyy}-${mm}-${dd}`, displayDateTime: `${dd}.${mm}.${yyyy} ${hh}:${mi}` };
   }
   const str = String(rawVal).trim();
-  // DD.MM.YYYY [HH:mm:ss]
-  const trMatch = str.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}:\d{2}))?/);
+  // DD.MM.YYYY [HH:mm:ss] or DD/MM/YYYY [HH:mm:ss]
+  const trMatch = str.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})(?:\s+(\d{1,2}:\d{2}))?/);
   if (trMatch) {
     const dd = trMatch[1].padStart(2, '0');
     const mm = trMatch[2].padStart(2, '0');
@@ -1219,30 +1230,36 @@ function handleTurkcellExcelUpload(event) {
     const parsedRows = [];
     const statusCounts = { SAĞLAM: 0, 'SAĞLAM DÖNEN': 0, KARANTİNA: 0, ARIZA: 0 };
 
-    for (const r of jsonRows) {
-      const sn = String(r['Seri No'] || r['SeriNo'] || r['SERI_NO'] || r['serial_no'] || '').trim();
+    for (const rawRow of jsonRows) {
+      // Normalize column keys (trim + uppercase + Turkish char fold) so minor header variations always match
+      const r = {};
+      for (const [k, v] of Object.entries(rawRow)) {
+        r[normalizeBysHeader(k)] = v;
+      }
+
+      const sn = String(r['SERI NO'] || r['SERINO'] || r['SERI_NO'] || r['SERIAL_NO'] || '').trim();
       if (!sn) continue;
 
-      if (!detectedCategory && r['Sirket']) {
-        const comp = String(r['Sirket']).trim().toUpperCase();
+      if (!detectedCategory && r['SIRKET']) {
+        const comp = String(r['SIRKET']).trim().toUpperCase();
         if (comp.includes('TSATIS') || comp.includes('TURKCELL')) detectedCategory = 'TURKCELL';
         else if (comp.includes('SUPERONLINE') || comp.includes('SOL')) detectedCategory = 'SOL';
       }
 
-      const kalemTanimi = String(r['Kalem Tanimi'] || r['Model'] || r['Malzeme Adı'] || r['model_name'] || '').trim();
-      const kalemKod = String(r['Kalem Kod'] || '').trim();
+      const kalemTanimi = String(r['KALEM TANIMI'] || r['MODEL'] || r['MALZEME ADI'] || r['MODEL_NAME'] || '').trim();
+      const kalemKod = String(r['KALEM KOD'] || '').trim();
       const modelName = kalemTanimi || kalemKod || 'Cihaz';
 
-      const rawShelf = String(r['Adres Statusu'] || r['Raf'] || r['Statü'] || r['logical_shelf'] || 'SAGLAM').trim().toUpperCase();
+      const rawShelf = String(r['ADRES STATUSU'] || r['RAF'] || r['STATU'] || r['LOGICAL_SHELF'] || 'SAGLAM').trim().toUpperCase();
       let normShelf = 'SAĞLAM';
       if (rawShelf.includes('ARIZA')) normShelf = 'ARIZA';
       else if (rawShelf.includes('KARANT')) normShelf = 'KARANTİNA';
       else if (rawShelf.includes('DONEN') || rawShelf.includes('DÖNEN')) normShelf = 'SAĞLAM DÖNEN';
       statusCounts[normShelf] = (statusCounts[normShelf] || 0) + 1;
 
-      const rawDate = r['Son Islem Tarihi'] !== undefined && r['Son Islem Tarihi'] !== ''
-        ? r['Son Islem Tarihi']
-        : (r['Tarih'] || r['Giriş Tarihi'] || r['sla_entry_date'] || '');
+      const rawDate = r['SON ISLEM TARIHI'] !== undefined && r['SON ISLEM TARIHI'] !== ''
+        ? r['SON ISLEM TARIHI']
+        : (r['TARIH'] || r['GIRIS TARIHI'] || r['SLA_ENTRY_DATE'] || '');
       const { isoDate, displayDateTime } = parseExcelDateValue(rawDate);
 
       parsedRows.push({
@@ -2960,8 +2977,12 @@ async function renderNotifications() {
         if (res.settings) {
           const emailIn = document.getElementById('gw-email-url');
           const waIn = document.getElementById('gw-wa-url');
+          const slaToIn = document.getElementById('gw-sla-to');
+          const slaCcIn = document.getElementById('gw-sla-cc');
           if (emailIn && !emailIn.value) emailIn.value = res.settings.email_webhook_url || '';
           if (waIn && !waIn.value) waIn.value = res.settings.whatsapp_webhook_url || '';
+          if (slaToIn && !slaToIn.value) slaToIn.value = res.settings.sla_report_to || '';
+          if (slaCcIn && !slaCcIn.value) slaCcIn.value = res.settings.sla_report_cc || '';
         }
       } catch (_) {}
     } else {
@@ -2996,13 +3017,44 @@ async function saveGatewaySettings() {
   if (CURRENT_USER?.role !== 'YÖNETİCİ') return showToast('Sadece Yönetici ayarları kaydedebilir.', 'warning');
   const email_webhook_url = document.getElementById('gw-email-url')?.value.trim() || '';
   const whatsapp_webhook_url = document.getElementById('gw-wa-url')?.value.trim() || '';
+  const sla_report_to = document.getElementById('gw-sla-to')?.value.trim() || '';
+  const sla_report_cc = document.getElementById('gw-sla-cc')?.value.trim() || '';
   try {
     await apiPost('/api/settings/gateway', {
       user_role: CURRENT_USER.role,
       email_webhook_url,
-      whatsapp_webhook_url
+      whatsapp_webhook_url,
+      sla_report_to,
+      sla_report_cc
     });
-    showToast('Otomatik WhatsApp ve E-Posta servis bağlantı ayarları kaydedildi.', 'success');
+    showToast('Bildirim, E-Posta ve SLA alıcı ayarları kaydedildi.', 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+function downloadSlaDashboardExcel() {
+  window.location.href = '/api/reports/sla-dashboard-xlsx';
+  showToast('4 sekmeli Kritik SLA Excel raporu indiriliyor...', 'info');
+}
+
+async function sendSlaDashboardEmailNow() {
+  if (CURRENT_USER?.role !== 'YÖNETİCİ') return showToast('Sadece Yönetici SLA raporu gönderebilir.', 'warning');
+  const sla_report_to = document.getElementById('gw-sla-to')?.value.trim() || '';
+  const sla_report_cc = document.getElementById('gw-sla-cc')?.value.trim() || '';
+  try {
+    showToast('Kritik SLA Dashboard Raporu ve 4 sekmeli Excel hazırlanıp gönderiliyor...', 'info');
+    const res = await apiPost('/api/reports/send-sla-dashboard-email', {
+      user_role: CURRENT_USER.role,
+      sla_report_to,
+      sla_report_cc
+    });
+    if (res.ok) {
+      showToast(`SLA Dashboard Raporu gönderildi! (${res.totalCritical} cihaz — Ek: ${res.filename}) | TO: ${res.to}`, 'success');
+    } else {
+      showToast(`Rapor loglandı ancak mail gönderiminde uyarı oluştu: ${res.error || 'Bilinmeyen hata'}`, 'warning');
+    }
+    await loadDashboardData();
   } catch (err) {
     showToast(err.message, 'error');
   }
